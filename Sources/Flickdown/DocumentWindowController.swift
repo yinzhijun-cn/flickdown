@@ -6,7 +6,7 @@ enum ViewMode: Int {
     case preview, source, edit
 }
 
-/// One window showing one Markdown file, kept in sync with the file on disk.
+/// One window showing one Markdown file, kept in sync with the file on disk, or an untitled document not yet saved.
 /// Preview mode shows the rendered page; source mode is the editor (with an outline); edit mode is the
 /// editor beside a live preview. The editor side lives in DocumentWindowController+Editing.swift.
 @MainActor
@@ -15,7 +15,9 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSSp
     static let markdownExtensions: Set<String> = ["md", "markdown", "mdown", "mkd", "mkdn", "mdwn", "mdx", "mdtxt", "mdtext"]
     private static let frameName = "FlickDocumentWindow"
 
-    let fileURL: URL
+    /// nil for an untitled document until it is first saved.
+    private(set) var fileURL: URL?
+    private(set) var displayName: String
     var onClose: ((DocumentWindowController) -> Void)?
 
     /// The preview's web view, created on first use: a window opened in source mode doesn't wait for WebKit.
@@ -57,7 +59,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSSp
     var fileEncoding: String.Encoding = .utf8
     private var queued: (chunks: [String], keepScroll: Bool)?
     private var generation = 0
-    var mode: ViewMode = Prefs.sourceMode ? .source : .preview
+    var mode: ViewMode
     lazy var modeSwitch = NSSegmentedControl(
         labels: [L("预览", "Preview"), L("源码", "Source"), L("编辑", "Edit")], trackingMode: .selectOne,
         target: self, action: #selector(modeSwitchChanged(_:)))
@@ -77,8 +79,19 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSSp
     var askingAboutExternalChange = false
     var suddenTerminationDisabled = false
 
-    init(fileURL: URL) {
+    convenience init(fileURL: URL) {
+        self.init(fileURL: fileURL, displayName: fileURL.lastPathComponent)
+    }
+
+    /// A new, empty document. It opens in edit mode: an empty preview has nothing to show.
+    convenience init(untitledName: String) {
+        self.init(fileURL: nil, displayName: untitledName)
+    }
+
+    private init(fileURL: URL?, displayName: String) {
         self.fileURL = fileURL
+        self.displayName = displayName
+        mode = fileURL == nil ? .edit : (Prefs.sourceMode ? .source : .preview)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1100, height: 900),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable],
                               backing: .buffered, defer: true)
@@ -86,7 +99,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSSp
         window.isRestorable = false
         window.tabbingIdentifier = Self.frameName
         window.minSize = NSSize(width: 360, height: 240)
-        window.title = fileURL.lastPathComponent
+        window.title = displayName
         window.representedURL = fileURL
         window.backgroundColor = Self.pageBackground
         super.init(window: window)
@@ -97,8 +110,10 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSSp
         place(window)
         Bench.mark("window created")
 
-        loadFromDisk(force: true)
-        watcher = FileWatcher(url: fileURL) { [weak self] in self?.loadFromDisk(force: false) }
+        if let fileURL {
+            loadFromDisk(force: true)
+            watcher = FileWatcher(url: fileURL) { [weak self] in self?.loadFromDisk(force: false) }
+        }
         if mode != .preview {
             _ = makeEditor()
             applyLayout()
@@ -136,11 +151,10 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSSp
 
     required init?(coder: NSCoder) { fatalError("not supported") }
 
-    var displayName: String { fileURL.lastPathComponent }
-
     // MARK: Rendering
 
     func loadFromDisk(force: Bool) {
+        guard let fileURL else { return }
         let data: Data
         do {
             data = try Data(contentsOf: fileURL)
@@ -221,7 +235,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSSp
         let streamed = !keepScroll && chunks.count > 1
         let following = followEditor ? editor : nil
         let options: [String: Any] = [
-            "base": fileURL.deletingLastPathComponent().absoluteString,
+            "base": fileURL?.deletingLastPathComponent().absoluteString ?? "",
             "keep": keepScroll,
             "toc": Prefs.showOutline,
             "more": streamed,
@@ -299,6 +313,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSSp
     // MARK: Menu actions
 
     @objc func revealInFinder(_ sender: Any?) {
+        guard let fileURL else { return }
         NSWorkspace.shared.activateFileViewerSelecting([fileURL])
     }
 
@@ -342,7 +357,11 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSSp
             item.state = mode == .edit && !previewPane.isHidden ? .on : .off
             return mode == .edit
         case #selector(saveDocument(_:)):
-            return editor?.isDirty ?? false
+            return fileURL == nil || hasUnsavedChanges
+        case #selector(saveDocumentAs(_:)):
+            return editor != nil
+        case #selector(reloadDocument(_:)), #selector(revealInFinder(_:)):
+            return fileURL != nil
         default:
             break
         }
@@ -494,6 +513,26 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSSp
             window.setContentSize(NSSize(width: min(1100, visible.width - 80), height: min(1000, visible.height - 60)))
             window.center()
         }
+    }
+
+    /// After "Save As" (including the first save of an untitled document) the window shows and watches the new file.
+    func attach(to url: URL) {
+        let url = url.standardizedFileURL.resolvingSymlinksInPath()
+        fileURL = url
+        displayName = url.lastPathComponent
+        window?.title = displayName
+        window?.representedURL = url
+        watcher?.stop()
+        watcher = FileWatcher(url: url) { [weak self] in self?.loadFromDisk(force: false) }
+        NSDocumentController.shared.noteNewRecentDocumentURL(url)
+    }
+
+    /// The "+" button in the tab bar.
+    override func newWindowForTab(_ sender: Any?) {
+        guard let delegate = NSApp.delegate as? AppDelegate, let window,
+              let newWindow = delegate.openUntitled().window else { return }
+        window.addTabbedWindow(newWindow, ordered: .above)
+        newWindow.makeKeyAndOrderFront(nil)
     }
 
     func windowDidEndLiveResize(_ notification: Notification) { window?.saveFrame(usingName: Self.frameName) }
