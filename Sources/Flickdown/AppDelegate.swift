@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var documents: [DocumentWindowController] = []
+    private var untitledCount = 0
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         Bench.mark("willFinishLaunching")
@@ -67,15 +68,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), !isDir.boolValue else { return }
 
-        let doc = DocumentWindowController(fileURL: url)
-        doc.onClose = { [weak self] closed in self?.documents.removeAll { $0 === closed } }
-        documents.append(doc)
-        if let window = doc.window { DebugHooks.configure(window) }
+        add(DocumentWindowController(fileURL: url))
         // Updating the recent-items list is a synchronous XPC round trip; keep it off the open path.
         Task { @MainActor in
             try? await Task.sleep(for: .seconds(1))
             NSDocumentController.shared.noteNewRecentDocumentURL(url)
         }
+    }
+
+    @objc func newDocument(_ sender: Any?) {
+        openUntitled()
+    }
+
+    /// Untitled documents are numbered like TextEdit's: "Untitled", "Untitled 2", …
+    @discardableResult
+    func openUntitled() -> DocumentWindowController {
+        untitledCount += 1
+        let name = untitledCount == 1 ? L("未命名", "Untitled") : L("未命名 \(untitledCount)", "Untitled \(untitledCount)")
+        let doc = DocumentWindowController(untitledName: name)
+        add(doc)
+        return doc
+    }
+
+    private func add(_ doc: DocumentWindowController) {
+        doc.onClose = { [weak self] closed in self?.documents.removeAll { $0 === closed } }
+        documents.append(doc)
+        if let window = doc.window { DebugHooks.configure(window) }
     }
 
     @objc func showOpenPanel(_ sender: Any?) {

@@ -1,4 +1,5 @@
 import AppKit
+import UniformTypeIdentifiers
 import WebKit
 
 /// The editor side: source mode (outline + editor) and edit mode (editor + live preview, scrolled in step),
@@ -183,24 +184,55 @@ extension DocumentWindowController {
     // MARK: Saving
 
     @objc func saveDocument(_ sender: Any?) {
-        save()
+        save { _ in }
     }
 
-    /// Writes the editor's text in the file's original encoding. Returns false if it couldn't be saved.
-    @discardableResult
-    func save() -> Bool {
+    @objc func saveDocumentAs(_ sender: Any?) {
+        saveAs { _ in }
+    }
+
+    /// Saves to the document's file; an untitled document asks where first. `completion(false)` if it wasn't saved.
+    func save(_ completion: @escaping (Bool) -> Void) {
+        guard let fileURL else { return saveAs(completion) }
+        completion(write(to: fileURL))
+    }
+
+    /// Asks for a location, saves there, and from then on the window shows that file.
+    func saveAs(_ completion: @escaping (Bool) -> Void) {
+        guard let window else { return completion(false) }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [UTType("net.daringfireball.markdown")].compactMap { $0 }
+        panel.nameFieldStringValue = fileURL?.lastPathComponent ?? "\(displayName).md"
+        if let fileURL { panel.directoryURL = fileURL.deletingLastPathComponent() }
+        panel.beginSheetModal(for: window) { [weak self] response in
+            MainActor.assumeIsolated {
+                guard let self, response == .OK, let url = panel.url, self.write(to: url) else { return completion(false) }
+                self.attach(to: url)
+                // Relative images and links now resolve against the new folder.
+                if self.previewVisible { self.renderCurrent(keepScroll: true, followEditor: self.mode == .edit) }
+                completion(true)
+            }
+        }
+    }
+
+    /// Writes the editor's text in the file's original encoding. Returns false if it couldn't be written.
+    private func write(to url: URL) -> Bool {
         guard let editor, let window else { return true }
         let text = editor.text
         guard let data = text.data(using: fileEncoding) ?? text.data(using: .utf8) else { return false }
         do {
-            // Write a temporary copy, then swap it in: a failed write never leaves a half-written file,
-            // and the original's permissions and metadata are kept.
             let fm = FileManager.default
-            let dir = try fm.url(for: .itemReplacementDirectory, in: .userDomainMask, appropriateFor: fileURL, create: true)
-            defer { try? fm.removeItem(at: dir) }
-            let temp = dir.appendingPathComponent(fileURL.lastPathComponent)
-            try data.write(to: temp)
-            _ = try fm.replaceItemAt(fileURL, withItemAt: temp)
+            if fm.fileExists(atPath: url.path) {
+                // Write a temporary copy, then swap it in: a failed write never leaves a half-written file,
+                // and the original's permissions and metadata are kept.
+                let dir = try fm.url(for: .itemReplacementDirectory, in: .userDomainMask, appropriateFor: url, create: true)
+                defer { try? fm.removeItem(at: dir) }
+                let temp = dir.appendingPathComponent(url.lastPathComponent)
+                try data.write(to: temp)
+                _ = try fm.replaceItemAt(url, withItemAt: temp)
+            } else {
+                try data.write(to: url, options: .atomic)
+            }
         } catch {
             NSAlert(error: error).beginSheetModal(for: window)
             return false
@@ -261,7 +293,7 @@ extension DocumentWindowController {
                 guard let self else { return completion(false) }
                 switch response {
                 case .alertFirstButtonReturn:
-                    completion(self.save())
+                    self.save(completion)
                 case .alertThirdButtonReturn:
                     self.discardEdits()
                     completion(true)

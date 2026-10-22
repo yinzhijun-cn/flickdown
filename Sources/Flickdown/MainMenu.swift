@@ -21,6 +21,7 @@ enum MainMenu {
         app.addItem(item(L("退出 \(name)", "Quit \(name)"), #selector(NSApplication.terminate(_:)), "q"))
 
         let file = submenu(of: bar, L("文件", "File"))
+        file.addItem(item(L("新建", "New"), #selector(AppDelegate.newDocument(_:)), "n"))
         file.addItem(item(L("打开…", "Open…"), #selector(AppDelegate.showOpenPanel(_:)), "o"))
         let recent = NSMenu()
         recent.addItem(item(L("清除菜单", "Clear Menu"), #selector(NSDocumentController.clearRecentDocuments(_:))))
@@ -28,6 +29,7 @@ enum MainMenu {
         file.addItem(.separator())
         file.addItem(item(L("关闭", "Close"), #selector(NSWindow.performClose(_:)), "w"))
         file.addItem(item(L("存储", "Save"), #selector(DocumentWindowController.saveDocument(_:)), "s"))
+        file.addItem(item(L("存储为…", "Save As…"), #selector(DocumentWindowController.saveDocumentAs(_:)), "s", [.command, .shift]))
         file.addItem(item(L("重新载入", "Reload"), #selector(DocumentWindowController.reloadDocument(_:)), "r"))
         file.addItem(item(L("在访达中显示", "Show in Finder"), #selector(DocumentWindowController.revealInFinder(_:)), "r", [.command, .option]))
         file.addItem(.separator())
