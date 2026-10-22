@@ -1,0 +1,3 @@
+#!/bin/bash
+# Open Markdown files in Flickdown from the terminal:  flick README.md docs/*.md
+exec open -a Flickdown "$@"
