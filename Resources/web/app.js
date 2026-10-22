@@ -30,6 +30,10 @@
   let firstFrameDone = false;
   let renderStart = 0;
   let spyList = null; // cached outline-tracking targets for the current view
+  // Top-level node -> its HTML as md4c wrote it (before prepare() and the lazy renderers changed it),
+  // without the line mark. A re-render keeps every node whose HTML is unchanged.
+  const blockKeys = new WeakMap();
+  const generatedIds = new WeakSet(); // headings whose id came from slugify(), not from the document
 
   // ---------------------------------------------------------------------------
   // Lazily loaded renderers: nothing beyond this file is parsed unless the document needs it.
@@ -178,6 +182,29 @@
   const slugify = (text) =>
     text.trim().toLowerCase().replace(/[^\p{L}\p{M}\p{N}\p{Pc}\- ]/gu, '').replace(/ /g, '-');
 
+  function addHeadings(root) {
+    for (const h of root.querySelectorAll('h1, h2, h3, h4, h5, h6')) {
+      headings.push(h);
+      if (h.id && !generatedIds.has(h)) continue;
+      const slug = slugify(h.textContent) || 'section';
+      const n = slugs.get(slug) || 0;
+      slugs.set(slug, n + 1);
+      h.id = n ? `${slug}-${n}` : slug;
+      generatedIds.add(h);
+    }
+  }
+
+  // Line marks shift whenever a line is inserted above a block, so they are not part of its identity.
+  function blockKey(node) {
+    if (node.nodeType !== Node.ELEMENT_NODE) return node.nodeType + node.data;
+    const line = node.getAttribute('data-l');
+    if (line === null) return node.outerHTML;
+    node.removeAttribute('data-l');
+    const key = node.outerHTML;
+    node.setAttribute('data-l', line);
+    return key;
+  }
+
   function replaceBlock(pre, className, text, kind, pending) {
     const div = document.createElement('div');
     if (pre.dataset.l) div.dataset.l = pre.dataset.l;
@@ -196,15 +223,8 @@
 
   /** Fixes up a parsed (still inert) fragment and returns the elements to enhance lazily. */
   function prepare(frag) {
+    const keys = Array.from(frag.childNodes, blockKey);
     const pending = [];
-    for (const h of frag.querySelectorAll('h1, h2, h3, h4, h5, h6')) {
-      headings.push(h);
-      if (h.id) continue;
-      const slug = slugify(h.textContent) || 'section';
-      const n = slugs.get(slug) || 0;
-      slugs.set(slug, n + 1);
-      h.id = n ? `${slug}-${n}` : slug;
-    }
     for (const img of frag.querySelectorAll('img')) {
       img.loading = 'lazy';
       img.decoding = 'async';
@@ -232,7 +252,44 @@
       const title = div.querySelector(':scope > .admonition-title');
       if (title) title.textContent = ALERT_TITLES[type] || type;
     }
+    // replaceBlock() swaps nodes one for one, so the top-level nodes still line up with `keys`.
+    frag.childNodes.forEach((node, i) => blockKeys.set(node, keys[i]));
     return pending;
+  }
+
+  /**
+   * Brings the page up to `frag` (the whole new document) while keeping every top-level node whose HTML
+   * is unchanged, together with its highlighting, math and diagrams. Returns the new elements to enhance.
+   */
+  function patch(frag) {
+    const pending = prepare(frag);
+    const reusable = new Map(); // key -> current nodes with that HTML, in document order
+    for (const node of content.childNodes) {
+      const key = blockKeys.get(node);
+      if (reusable.has(key)) reusable.get(key).push(node);
+      else reusable.set(key, [node]);
+    }
+    const blocks = Array.from(frag.childNodes, (fresh) => {
+      const kept = reusable.get(blockKeys.get(fresh))?.shift();
+      if (kept?.nodeType === Node.ELEMENT_NODE && fresh.hasAttribute('data-l')) kept.setAttribute('data-l', fresh.getAttribute('data-l'));
+      return kept || fresh;
+    });
+    // Removed first, so that what stays is already in order and only new blocks need inserting.
+    for (const stale of reusable.values()) {
+      for (const node of stale) {
+        if (node.nodeType === Node.ELEMENT_NODE) {
+          observer.unobserve(node);
+          for (const el of node.querySelectorAll('[data-flick]')) observer.unobserve(el);
+        }
+        node.remove();
+      }
+    }
+    let cursor = content.firstChild;
+    for (const node of blocks) {
+      if (node === cursor) cursor = cursor.nextSibling;
+      else content.insertBefore(node, cursor);
+    }
+    return pending.filter((el) => el.isConnected);
   }
 
   function buildTOC() {
@@ -257,7 +314,8 @@
   const observeAll = (els) => { for (const el of els) if (el.dataset.flick) observer.observe(el); };
 
   /**
-   * o.base: the document's folder URL; o.keep: keep the scroll position (reload); o.toc: show the outline;
+   * o.base: the document's folder URL; o.keep: a re-render of the same document (live preview or reload):
+   * keep the scroll position and the unchanged blocks; o.toc: show the outline;
    * o.more: further pieces follow via append();
    * o.line/o.total: the editor's top line and line count, to scroll the preview to match it.
    */
@@ -275,12 +333,19 @@
     firstFrameDone = false;
     spyList = null;
     blockLines = null;
-    observer.disconnect();
 
     baseEl.setAttribute('href', base); // relative images and links resolve against the document's folder
     const frag = parse(html);
-    const pending = prepare(frag);
-    content.replaceChildren(frag);
+    let pending;
+    if (keepScroll) {
+      pending = patch(frag);
+      addHeadings(content);
+    } else {
+      observer.disconnect();
+      pending = prepare(frag);
+      addHeadings(frag);
+      content.replaceChildren(frag);
+    }
     buildTOC();
     setTOC(showTOC);
 
@@ -295,10 +360,11 @@
     // then syntax highlighting / KaTeX / Mermaid for blocks near the viewport.
     const startedAt = Date.now() - (performance.now() - t0);
     afterFrame(() => {
+      // Even after a newer render: it may have kept these blocks rather than replaced them.
+      observeAll(pending.filter((el) => el.isConnected));
       if (gen !== generation) return;
       firstFrameDone = true;
       post({ type: 'painted', start: startedAt, frame: Date.now() });
-      observeAll(pending);
       if (streaming) schedulePump();
     });
     return { ms: +(performance.now() - t0).toFixed(2), blocks: content.childElementCount, headings: headings.length };
@@ -328,6 +394,7 @@
     if (html !== undefined) {
       const frag = parse(html);
       const pending = prepare(frag);
+      addHeadings(frag);
       content.appendChild(frag);
       observeAll(pending);
       spyList = null;
