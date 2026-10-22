@@ -33,6 +33,8 @@ extension DocumentWindowController {
     private func switchMode(to new: ViewMode, at line: Double) {
         guard let window else { return }
         if new != .preview, editor == nil { _ = makeEditor() }
+        // The preview's find bar belongs to preview mode; elsewhere find goes to the editor.
+        if new != .preview { hideFindBar() }
         mode = new
         applyLayout()
         if new == .preview {

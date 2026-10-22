@@ -368,14 +368,15 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSSp
         return true
     }
 
-    // MARK: Find in the preview
+    // MARK: Find
 
     /// Edit ▸ Find items (⌘F, ⌘G, ⇧⌘G, ⌘E). The editor handles them itself when it has focus;
-    /// they arrive here for the preview.
+    /// otherwise they arrive here. Whenever the editor is on screen (source and edit mode) find goes to it,
+    /// so a window only ever shows the system find bar; the preview's own find bar is for preview mode.
     @objc override func performTextFinderAction(_ sender: Any?) {
         let tag = (sender as? NSValidatedUserInterfaceItem)?.tag ?? NSTextFinder.Action.showFindInterface.rawValue
         guard let action = NSTextFinder.Action(rawValue: tag) else { return }
-        if mode == .source, let editor {
+        if mode != .preview, let editor {
             window?.makeFirstResponder(editor.textView)
             editor.textView.performTextFinderAction(sender)
             return
@@ -411,7 +412,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSSp
         if !bar.field.stringValue.isEmpty { find(bar.field.stringValue, 0) }
     }
 
-    private func hideFindBar() {
+    func hideFindBar() {
         guard let pane = loadedPane, pane.isFindBarVisible else { return }
         pane.setFindBarVisible(false)
         if page.isReady { webView.evaluateJavaScript("FLICK.endFind()") }
