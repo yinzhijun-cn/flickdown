@@ -11,6 +11,7 @@
   const tocList = document.getElementById('flick-toc-list');
   const baseEl = document.getElementById('flick-base');
   const widthButton = document.getElementById('flick-width');
+  const tocButton = document.getElementById('flick-toc-toggle');
   document.getElementById('flick-toc-title').textContent = ZH ? '目录' : 'CONTENTS';
   widthButton.title = ZH ? '切换页宽' : 'Change Page Width';
 
@@ -420,7 +421,12 @@
 
   function setTOC(show) {
     document.body.classList.toggle('flick-toc-open', !!show);
+    tocButton.textContent = show ? '«' : (ZH ? '☰ 目录' : '☰ Contents');
+    tocButton.title = show ? (ZH ? '收起目录' : 'Hide Contents') : (ZH ? '展开目录' : 'Show Contents');
   }
+
+  // The app owns the outline switch (remembered, shared with the menu and the source outline) and calls setTOC back.
+  tocButton.addEventListener('click', () => post({ type: 'toggleOutline' }));
 
   /** Changes the text column width, keeping the top visible block at the same place within it. */
   function setPageWidth(width) {

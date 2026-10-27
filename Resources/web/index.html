@@ -96,10 +96,10 @@ body {
 #flick-toc a[data-l="5"] { padding-left: 58px; }
 #flick-toc a[data-l="6"] { padding-left: 70px; }
 
-/* Page width switch, floating at the top right */
-#flick-width {
+/* Floating buttons: outline switch at the top left, page width switch at the top right */
+#flick-toc-toggle, #flick-width {
   position: fixed;
-  top: 12px; right: 16px;
+  top: 12px;
   z-index: 10;
   padding: 3px 10px;
   border: 1px solid var(--border-soft);
@@ -112,8 +112,13 @@ body {
   -webkit-user-select: none;
   user-select: none;
 }
+#flick-width { right: 16px; }
 #flick-width:empty { display: none; } /* until the first render sets the width */
-#flick-width:hover { opacity: 1; color: var(--fg); }
+#flick-toc-toggle { display: none; left: 16px; }
+.flick-has-toc #flick-toc-toggle { display: block; }
+/* With the outline open, the button sits at the right end of its title row. */
+.flick-toc-open.flick-has-toc #flick-toc-toggle { left: 250px; transform: translateX(-100%); }
+#flick-toc-toggle:hover, #flick-width:hover { opacity: 1; color: var(--fg); }
 
 /* Document */
 .markdown-body { max-width: 860px; margin: 0 auto; }
@@ -227,9 +232,10 @@ body {
   #flick-main { padding: 24px 20px 64px; }
   .flick-toc-open.flick-has-toc #flick-toc { display: none; }
   .flick-toc-open.flick-has-toc #flick-main { margin-left: 0; }
+  #flick-toc-toggle { display: none !important; } /* the outline does not fit at this width */
 }
 @media print {
-  #flick-toc, #flick-width { display: none !important; }
+  #flick-toc, #flick-toc-toggle, #flick-width { display: none !important; }
   #flick-main { margin: 0 !important; padding: 0; }
   .markdown-body pre { white-space: pre-wrap; }
 }
@@ -237,6 +243,7 @@ body {
 </head>
 <body>
 <nav id="flick-toc"><div id="flick-toc-title"></div><div id="flick-toc-list"></div></nav>
+<button id="flick-toc-toggle" type="button"></button>
 <button id="flick-width" type="button"></button>
 <main id="flick-main"><article id="flick-content" class="markdown-body"></article></main>
 </body>
