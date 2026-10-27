@@ -96,6 +96,25 @@ body {
 #flick-toc a[data-l="5"] { padding-left: 58px; }
 #flick-toc a[data-l="6"] { padding-left: 70px; }
 
+/* Page width switch, floating at the top right */
+#flick-width {
+  position: fixed;
+  top: 12px; right: 16px;
+  z-index: 10;
+  padding: 3px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--muted);
+  font: 12px/1.5 -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+  opacity: .5;
+  cursor: pointer;
+  -webkit-user-select: none;
+  user-select: none;
+}
+#flick-width:empty { display: none; } /* until the first render sets the width */
+#flick-width:hover { opacity: 1; color: var(--fg); }
+
 /* Document */
 .markdown-body { max-width: 860px; margin: 0 auto; }
 [data-width="wide"] .markdown-body { max-width: 1200px; }
@@ -210,7 +229,7 @@ body {
   .flick-toc-open.flick-has-toc #flick-main { margin-left: 0; }
 }
 @media print {
-  #flick-toc { display: none !important; }
+  #flick-toc, #flick-width { display: none !important; }
   #flick-main { margin: 0 !important; padding: 0; }
   .markdown-body pre { white-space: pre-wrap; }
 }
@@ -218,6 +237,7 @@ body {
 </head>
 <body>
 <nav id="flick-toc"><div id="flick-toc-title"></div><div id="flick-toc-list"></div></nav>
+<button id="flick-width" type="button"></button>
 <main id="flick-main"><article id="flick-content" class="markdown-body"></article></main>
 </body>
 </html>

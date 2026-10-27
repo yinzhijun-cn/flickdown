@@ -10,11 +10,18 @@
   const tocBox = document.getElementById('flick-toc');
   const tocList = document.getElementById('flick-toc-list');
   const baseEl = document.getElementById('flick-base');
+  const widthButton = document.getElementById('flick-width');
   document.getElementById('flick-toc-title').textContent = ZH ? '目录' : 'CONTENTS';
+  widthButton.title = ZH ? '切换页宽' : 'Change Page Width';
 
   const ALERT_TITLES = ZH
     ? { note: '备注', tip: '提示', important: '重要', warning: '警告', caution: '注意' }
     : { note: 'Note', tip: 'Tip', important: 'Important', warning: 'Warning', caution: 'Caution' };
+
+  const PAGE_WIDTHS = ['standard', 'wide', 'full'];
+  const PAGE_WIDTH_TITLES = ZH
+    ? { standard: '标准', wide: '宽', full: '全宽' }
+    : { standard: 'Standard', wide: 'Wide', full: 'Full Width' };
 
   const post = (msg) => window.webkit?.messageHandlers?.flick?.postMessage(msg);
 
@@ -334,7 +341,7 @@
     spyList = null;
     blockLines = null;
 
-    document.body.dataset.width = width;
+    showPageWidth(width);
     baseEl.setAttribute('href', base); // relative images and links resolve against the document's folder
     const frag = parse(html);
     let pending;
@@ -419,13 +426,25 @@
   function setPageWidth(width) {
     const anchor = [...content.children].find((el) => el.getBoundingClientRect().bottom > 0);
     const before = anchor?.getBoundingClientRect();
-    document.body.dataset.width = width;
+    showPageWidth(width);
     if (!anchor) return;
     const after = anchor.getBoundingClientRect();
     // A block that starts below the top keeps its distance; one cut by the top keeps the same share hidden.
     const top = before.top > 0 ? before.top : (before.top / before.height) * after.height;
     window.scrollTo(0, window.scrollY + after.top - top);
   }
+
+  function showPageWidth(width) {
+    document.body.dataset.width = width;
+    widthButton.textContent = '↔ ' + PAGE_WIDTH_TITLES[width];
+  }
+
+  // The floating button steps through the widths; the app remembers the choice.
+  widthButton.addEventListener('click', () => {
+    const next = PAGE_WIDTHS[(PAGE_WIDTHS.indexOf(document.body.dataset.width) + 1) % PAGE_WIDTHS.length];
+    setPageWidth(next);
+    post({ type: 'pageWidth', width: next });
+  });
 
   // ---------------------------------------------------------------------------
   // Edit mode: preview position <-> source line, using the data-l line marks on top-level blocks.

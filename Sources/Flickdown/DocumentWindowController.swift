@@ -279,6 +279,8 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSSp
         switch message["type"] as? String {
         case "line":
             if mode == .edit, let line = message["line"] as? Double { editor?.scroll(toLine: line) }
+        case "pageWidth":
+            if let width = (message["width"] as? String).flatMap(PageWidth.init) { Prefs.pageWidth = width }
         case "find":
             loadedPane?.loadedFindBar?.setResult(count: message["count"] as? Int ?? 0, current: message["current"] as? Int ?? 0,
                                           capped: message["capped"] as? Bool ?? false)
