@@ -62,6 +62,14 @@ enum MainMenu {
         view.addItem(item(L("编辑时显示预览", "Show Preview While Editing"), #selector(DocumentWindowController.togglePreviewPane(_:)), "p", [.command, .option]))
         view.addItem(.separator())
         view.addItem(item(L("大纲", "Outline"), #selector(DocumentWindowController.toggleOutline(_:)), "s", [.command, .control]))
+        let width = NSMenu()
+        for (pageWidth, title, key) in [(PageWidth.standard, L("标准", "Standard"), "1"), (.wide, L("宽", "Wide"), "2"),
+                                        (.full, L("全宽", "Full Width"), "3")] {
+            let widthItem = item(title, #selector(DocumentWindowController.setPageWidth(_:)), key, [.command, .option])
+            widthItem.representedObject = pageWidth.rawValue
+            width.addItem(widthItem)
+        }
+        view.addItem(parent(L("页宽", "Page Width"), width))
         view.addItem(.separator())
         view.addItem(item(L("放大", "Zoom In"), #selector(DocumentWindowController.zoomIn(_:)), "="))
         view.addItem(item(L("缩小", "Zoom Out"), #selector(DocumentWindowController.zoomOut(_:)), "-"))

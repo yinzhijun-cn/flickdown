@@ -21,6 +21,16 @@ enum Prefs {
         get { let z = UserDefaults.standard.double(forKey: "zoom"); return z == 0 ? 1 : z }
         set { UserDefaults.standard.set(newValue, forKey: "zoom") }
     }
+
+    static var pageWidth: PageWidth {
+        get { UserDefaults.standard.string(forKey: "pageWidth").flatMap(PageWidth.init) ?? .standard }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: "pageWidth") }
+    }
+}
+
+/// The preview's text column width; the raw value is the page's `data-width` (web/index.html sets the widths).
+enum PageWidth: String {
+    case standard, wide, full
 }
 
 /// Startup and render timing, enabled with FLICK_BENCH=1.

@@ -320,7 +320,7 @@
    * o.line/o.total: the editor's top line and line count, to scroll the preview to match it.
    */
   function render(html, o) {
-    const { base, keep: keepScroll, toc: showTOC, more, line, total } = o;
+    const { base, keep: keepScroll, toc: showTOC, width, more, line, total } = o;
     const t0 = performance.now();
     const gen = ++generation;
     const y = window.scrollY;
@@ -334,6 +334,7 @@
     spyList = null;
     blockLines = null;
 
+    document.body.dataset.width = width;
     baseEl.setAttribute('href', base); // relative images and links resolve against the document's folder
     const frag = parse(html);
     let pending;
@@ -412,6 +413,18 @@
 
   function setTOC(show) {
     document.body.classList.toggle('flick-toc-open', !!show);
+  }
+
+  /** Changes the text column width, keeping the top visible block at the same place within it. */
+  function setPageWidth(width) {
+    const anchor = [...content.children].find((el) => el.getBoundingClientRect().bottom > 0);
+    const before = anchor?.getBoundingClientRect();
+    document.body.dataset.width = width;
+    if (!anchor) return;
+    const after = anchor.getBoundingClientRect();
+    // A block that starts below the top keeps its distance; one cut by the top keeps the same share hidden.
+    const top = before.top > 0 ? before.top : (before.top / before.height) * after.height;
+    window.scrollTo(0, window.scrollY + after.top - top);
   }
 
   // ---------------------------------------------------------------------------
@@ -699,6 +712,6 @@
   window.addEventListener('scroll', onScroll, { passive: true });
   window.addEventListener('resize', onScroll, { passive: true });
 
-  window.FLICK = { render, append, setTOC, jump, setEditing, syncTo, topLine, find, endFind, selectedText };
+  window.FLICK = { render, append, setTOC, setPageWidth, jump, setEditing, syncTo, topLine, find, endFind, selectedText };
   post({ type: 'ready' });
 })();

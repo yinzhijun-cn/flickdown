@@ -238,6 +238,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSSp
             "base": fileURL?.deletingLastPathComponent().absoluteString ?? "",
             "keep": keepScroll,
             "toc": Prefs.showOutline,
+            "width": Prefs.pageWidth.rawValue,
             "more": streamed,
             "line": following.map { $0.topLine() } ?? NSNull(),
             "total": following?.lineCount ?? 0,
@@ -323,6 +324,12 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSSp
         refreshOutline()
     }
 
+    @objc func setPageWidth(_ sender: NSMenuItem) {
+        guard let width = (sender.representedObject as? String).flatMap(PageWidth.init) else { return }
+        Prefs.pageWidth = width
+        loadedPage?.webView.evaluateJavaScript("FLICK.setPageWidth('\(width.rawValue)')")
+    }
+
     @objc func zoomIn(_ sender: Any?) { setZoom(Prefs.zoom * 1.1) }
     @objc func zoomOut(_ sender: Any?) { setZoom(Prefs.zoom / 1.1) }
     @objc func actualSize(_ sender: Any?) { setZoom(1) }
@@ -349,6 +356,8 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSSp
         switch item.action {
         case #selector(toggleOutline(_:)):
             item.state = Prefs.showOutline ? .on : .off
+        case #selector(setPageWidth(_:)):
+            item.state = item.representedObject as? String == Prefs.pageWidth.rawValue ? .on : .off
         case #selector(setViewMode(_:)):
             item.state = item.tag == mode.rawValue ? .on : .off
         case #selector(toggleSource(_:)):
