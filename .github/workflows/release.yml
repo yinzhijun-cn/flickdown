@@ -1,0 +1,47 @@
+# 推送 v* tag 时构建 Flickdown.app，打成 zip 上传 artifact 并创建 GitHub Release。
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: [self-hosted, mac-mini]
+    steps:
+      - uses: actions/checkout@v4
+
+      # tag 去掉 v 作为版本号写入 Info.plist（只改本次构建的工作区，不提交）；
+      # 必须在 build.sh 签名之前写，签名后再改 plist 会破坏签名。
+      - name: 写入版本号
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" Resources/Info.plist
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $GITHUB_RUN_NUMBER" Resources/Info.plist
+
+      - name: 构建
+        run: bash scripts/build.sh
+
+      - name: 打包 zip
+        run: ditto -c -k --keepParent build/Flickdown.app "build/Flickdown-$VERSION.zip"
+
+      - name: 上传 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Flickdown-${{ env.VERSION }}
+          path: build/Flickdown-${{ env.VERSION }}.zip
+
+      - name: 创建 GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/Flickdown-${{ env.VERSION }}.zip
+          generate_release_notes: true
+          body: |
+            应用仅做了 ad-hoc 签名、未公证。下载解压后首次打开会被 Gatekeeper 拦截，请右键「打开」，或执行：
+            `xattr -dr com.apple.quarantine /Applications/Flickdown.app`
+          prerelease: ${{ contains(github.ref_name, '-') }}
