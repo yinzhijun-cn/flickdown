@@ -39,13 +39,23 @@ enum MarkdownRenderer {
 
     /// The document as text (for the source view and the editor), decoded the same way as for rendering.
     /// A UTF-8 byte-order mark stays in the text, so saving writes it back unchanged.
-    static func decode(_ data: Data) -> (text: String, encoding: String.Encoding) {
-        if let text = String(data: data, encoding: .utf8) { return (text, .utf8) }
-        if let text = String(data: data, encoding: gb18030) { return (text, gb18030) }
-        return (String(decoding: data, as: UTF8.self), .utf8)
+    static func decode(_ data: Data) -> (text: String, encoding: String.Encoding)? {
+        // Keep the BOM as U+FEFF with an explicit byte order, so saving preserves both.
+        if data.starts(with: [0xFF, 0xFE]) || data.starts(with: [0xFE, 0xFF]) {
+            let encoding: String.Encoding = data.first == 0xFF ? .utf16LittleEndian : .utf16BigEndian
+            let content = data.dropFirst(2)
+            guard let text = String(data: content, encoding: encoding), !text.contains("\0"),
+                  text.data(using: encoding) == content else { return nil }
+            return ("\u{FEFF}" + text, encoding)
+        }
+        guard !data.contains(0) else { return nil }
+        if let text = String(data: data, encoding: .utf8) {
+            // Foundation strips the UTF-8 BOM; keep it in the editable text for saving.
+            return (data.starts(with: [0xEF, 0xBB, 0xBF]) ? "\u{FEFF}" + text : text, .utf8)
+        }
+        if let text = String(data: data, encoding: gb18030), text.data(using: gb18030) == data { return (text, gb18030) }
+        return nil
     }
-
-    static func sourceText(_ data: Data) -> String { decode(data).text }
 
     private static let gb18030 = String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(
         CFStringEncoding(CFStringEncodings.GB_18030_2000.rawValue)))
@@ -53,7 +63,7 @@ enum MarkdownRenderer {
     /// md4c expects UTF-8. Older Chinese documents are often GBK/GB18030, so fall back to that.
     private static func utf8(_ data: Data) -> Data {
         if String(data: data, encoding: .utf8) != nil { return data }
-        if let text = String(data: data, encoding: gb18030) { return Data(text.utf8) }
+        if let decoded = decode(data) { return Data(decoded.text.utf8) }
         return data
     }
 

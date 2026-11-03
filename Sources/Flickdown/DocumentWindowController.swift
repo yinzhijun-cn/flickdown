@@ -6,18 +6,18 @@ enum ViewMode: Int {
     case preview, source, edit
 }
 
-/// One window showing one Markdown file, kept in sync with the file on disk, or an untitled document not yet saved.
+/// One text file in a window or native tab, kept in sync with the file on disk.
 /// Preview mode shows the rendered page; source mode is the editor (with an outline); edit mode is the
 /// editor beside a live preview. The editor side lives in DocumentWindowController+Editing.swift.
 @MainActor
 final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSSplitViewDelegate,
-    WKNavigationDelegate, WKUIDelegate {
+    NSMenuItemValidation, WKNavigationDelegate, WKUIDelegate {
     static let markdownExtensions: Set<String> = ["md", "markdown", "mdown", "mkd", "mkdn", "mdwn", "mdx", "mdtxt", "mdtext"]
     private static let frameName = "FlickDocumentWindow"
 
-    /// nil for an untitled document until it is first saved.
-    private(set) var fileURL: URL?
-    private(set) var displayName: String
+    var fileURL: URL?
+    var displayName: String
+    let isMarkdown: Bool
     var onClose: ((DocumentWindowController) -> Void)?
 
     /// The preview's web view, created on first use: a window opened in source mode doesn't wait for WebKit.
@@ -53,8 +53,8 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSSp
         editor.onFinderAction = { [weak self] sender in self?.performTextFinderAction(sender) }
         return editor
     }()
-    private var watcher: FileWatcher?
-    /// The file's bytes as last read or written; external changes are detected against this.
+    var watcher: FileWatcher?
+    /// Last loaded/saved bytes, or the initial selection before its first save.
     var lastSource: Data?
     var fileEncoding: String.Encoding = .utf8
     private var queued: (chunks: [String], keepScroll: Bool)?
@@ -79,19 +79,42 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSSp
     var askingAboutExternalChange = false
     var suddenTerminationDisabled = false
 
-    convenience init(fileURL: URL) {
-        self.init(fileURL: fileURL, displayName: fileURL.lastPathComponent)
+    convenience init?(fileURL: URL, tabbedWith tabTarget: NSWindow? = nil) {
+        self.init(documentURL: fileURL, displayName: fileURL.lastPathComponent,
+                  isMarkdown: Self.markdownExtensions.contains(fileURL.pathExtension.lowercased()))
+        guard loadFromDisk(force: true) else { return nil }
+        watcher = FileWatcher(url: fileURL) { [weak self] in self?.loadFromDisk(force: false) }
+        showDocument(tabbedWith: tabTarget)
     }
 
-    /// A new, empty document. It opens in edit mode: an empty preview has nothing to show.
-    convenience init(untitledName: String) {
-        self.init(fileURL: nil, displayName: untitledName)
+    /// A selection is an independent, unsaved text document; no temporary file backs it.
+    convenience init(selectedText: String, tabbedWith tabTarget: NSWindow? = nil) {
+        self.init(documentURL: nil, displayName: L("未命名.txt", "Untitled.txt"), isMarkdown: false)
+        lastSource = Data(selectedText.utf8)
+        let editor = makeEditor()
+        editor.markSaved("")
+        updateEditedState()
+        showDocument(tabbedWith: tabTarget)
     }
 
-    private init(fileURL: URL?, displayName: String) {
-        self.fileURL = fileURL
+    /// New Markdown documents keep the editor and live preview available before the first save.
+    convenience init(untitledName: String, tabbedWith tabTarget: NSWindow? = nil) {
+        self.init(documentURL: nil, displayName: untitledName, isMarkdown: true)
+        lastSource = Data()
+        showDocument(tabbedWith: tabTarget)
+    }
+
+    private init(documentURL: URL?, displayName: String, isMarkdown: Bool) {
+        fileURL = documentURL
         self.displayName = displayName
-        mode = fileURL == nil ? .edit : (Prefs.sourceMode ? .source : .preview)
+        self.isMarkdown = isMarkdown
+        if !isMarkdown {
+            mode = .source
+        } else if documentURL == nil {
+            mode = .edit
+        } else {
+            mode = Prefs.sourceMode ? .source : .preview
+        }
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1100, height: 900),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable],
                               backing: .buffered, defer: true)
@@ -100,28 +123,33 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSSp
         window.tabbingIdentifier = Self.frameName
         window.minSize = NSSize(width: 360, height: 240)
         window.title = displayName
-        window.representedURL = fileURL
+        window.representedURL = documentURL
+        window.tab.toolTip = documentURL?.path
         window.backgroundColor = Self.pageBackground
         super.init(window: window)
 
         window.delegate = self
         if mode == .preview { window.contentView = previewPane }
-        addModeSwitch(to: window)
-        place(window)
+        if isMarkdown { addModeSwitch(to: window) }
         Bench.mark("window created")
+    }
 
-        if let fileURL {
-            loadFromDisk(force: true)
-            watcher = FileWatcher(url: fileURL) { [weak self] in self?.loadFromDisk(force: false) }
+    private func showDocument(tabbedWith tabTarget: NSWindow?) {
+        guard let window else { return }
+        if let tabTarget {
+            window.setFrame(tabTarget.frame, display: false)
+        } else {
+            place(window)
         }
         if mode != .preview {
-            _ = makeEditor()
+            if editor == nil { _ = makeEditor() }
             applyLayout()
             refreshOutline()
         }
 
         // Show the window right away rather than after the first render, so WebKit's first-visibility
         // setup overlaps with page loading. The background matches the page, so nothing flashes.
+        if let tabTarget { tabTarget.addTabbedWindow(window, ordered: .above) }
         showWindow(nil)
         window.makeFirstResponder(mode == .preview ? webView : editor?.textView)
         Bench.mark("window shown")
@@ -135,9 +163,11 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSSp
                 }
             }
             // Have a web view ready by the time the preview is wanted.
-            Task { @MainActor in
-                try? await Task.sleep(for: .seconds(1))
-                WebViewPool.prewarm()
+            if isMarkdown {
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(1))
+                    WebViewPool.prewarm()
+                }
             }
         }
     }
@@ -153,26 +183,39 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSSp
 
     // MARK: Rendering
 
-    func loadFromDisk(force: Bool) {
-        guard let fileURL else { return }
+    @discardableResult
+    func loadFromDisk(force: Bool) -> Bool {
+        guard let fileURL else { return false }
         let data: Data
+        let decoded: (text: String, encoding: String.Encoding)
         do {
             data = try Data(contentsOf: fileURL)
+            if !force, data == lastSource { return true }
+            guard let text = MarkdownRenderer.decode(data) else {
+                throw CocoaError(.fileReadInapplicableStringEncoding, userInfo: [
+                    NSLocalizedDescriptionKey: L("无法以文本打开“\(displayName)”", "Cannot open “\(displayName)” as text"),
+                    NSLocalizedFailureReasonErrorKey: L("文件包含二进制数据，或使用了不支持的文本编码。", "The file contains binary data or uses an unsupported text encoding.")
+                ])
+            }
+            decoded = text
         } catch {
-            if lastSource == nil { failToOpen(error) }
-            return
+            let alert = NSAlert(error: error)
+            if let window, window.isVisible {
+                alert.beginSheetModal(for: window)
+            } else {
+                alert.runModal()
+            }
+            return false
         }
-        if !force, data == lastSource { return }
         if let editor, editor.isDirty, lastSource != nil {
             // Never replace unsaved edits silently.
             if data != lastSource { fileChangedWhileEditing(data) }
-            return
+            return true
         }
         let keepScroll = lastSource != nil
         lastSource = data
+        fileEncoding = decoded.encoding
         if let editor {
-            let decoded = MarkdownRenderer.decode(data)
-            fileEncoding = decoded.encoding
             if decoded.text != editor.text {
                 editor.setText(decoded.text)
                 refreshOutline()
@@ -183,6 +226,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSSp
         } else {
             previewStale = true
         }
+        return true
     }
 
     var previewVisible: Bool { mode == .preview || (mode == .edit && loadedPane?.isHidden != true) }
@@ -296,12 +340,6 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSSp
         }
     }
 
-    private func failToOpen(_ error: Error) {
-        let alert = NSAlert(error: error)
-        alert.runModal()
-        close()
-    }
-
     // MARK: View modes
 
     @objc func setViewMode(_ sender: NSMenuItem) {
@@ -323,13 +361,14 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSSp
     }
 
     @objc func toggleOutline(_ sender: Any?) {
+        guard isMarkdown else { return }
         Prefs.showOutline.toggle()
         loadedPage?.webView.evaluateJavaScript("FLICK.setTOC(\(Prefs.showOutline))")
         refreshOutline()
     }
 
     @objc func setPageWidth(_ sender: NSMenuItem) {
-        guard let width = (sender.representedObject as? String).flatMap(PageWidth.init) else { return }
+        guard isMarkdown, let width = (sender.representedObject as? String).flatMap(PageWidth.init) else { return }
         Prefs.pageWidth = width
         loadedPage?.webView.evaluateJavaScript("FLICK.setPageWidth('\(width.rawValue)')")
     }
@@ -359,20 +398,24 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSSp
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         switch item.action {
         case #selector(toggleOutline(_:)):
-            item.state = Prefs.showOutline ? .on : .off
+            item.state = isMarkdown && Prefs.showOutline ? .on : .off
+            return isMarkdown
         case #selector(setPageWidth(_:)):
-            item.state = item.representedObject as? String == Prefs.pageWidth.rawValue ? .on : .off
+            item.state = isMarkdown && item.representedObject as? String == Prefs.pageWidth.rawValue ? .on : .off
+            return isMarkdown
         case #selector(setViewMode(_:)):
             item.state = item.tag == mode.rawValue ? .on : .off
+            return isMarkdown || item.tag == ViewMode.source.rawValue
         case #selector(toggleSource(_:)):
             item.state = mode == .source ? .on : .off
+            return isMarkdown
         case #selector(togglePreviewPane(_:)):
             item.state = mode == .edit && !previewPane.isHidden ? .on : .off
             return mode == .edit
         case #selector(saveDocument(_:)):
             return fileURL == nil || hasUnsavedChanges
         case #selector(saveDocumentAs(_:)):
-            return editor != nil
+            return true
         case #selector(reloadDocument(_:)), #selector(revealInFinder(_:)):
             return fileURL != nil
         default:
@@ -384,8 +427,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSSp
     // MARK: Find
 
     /// Edit ▸ Find items (⌘F, ⌘G, ⇧⌘G, ⌘E). The editor handles them itself when it has focus;
-    /// otherwise they arrive here. Whenever the editor is on screen (source and edit mode) find goes to it,
-    /// so a window only ever shows the system find bar; the preview's own find bar is for preview mode.
+    /// otherwise source and edit mode still use the editor's system find bar.
     @objc override func performTextFinderAction(_ sender: Any?) {
         let tag = (sender as? NSValidatedUserInterfaceItem)?.tag ?? NSTextFinder.Action.showFindInterface.rawValue
         guard let action = NSTextFinder.Action(rawValue: tag) else { return }
@@ -473,8 +515,10 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSSp
         if url.isFileURL {
             var isDir: ObjCBool = false
             let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir)
-            if exists, !isDir.boolValue, Self.markdownExtensions.contains(url.pathExtension.lowercased()) {
-                (NSApp.delegate as? AppDelegate)?.open(url)
+            let type = UTType(filenameExtension: url.pathExtension)
+            if exists, !isDir.boolValue,
+               Self.markdownExtensions.contains(url.pathExtension.lowercased()) || type?.conforms(to: .text) == true {
+                (NSApp.delegate as? AppDelegate)?.open([url])
             } else if exists, !isDir.boolValue, Self.isSafeToOpen(url) {
                 NSWorkspace.shared.open(url)
             } else if exists {
@@ -485,7 +529,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSSp
         }
     }
 
-    /// A link in a document must not be able to launch scripts or apps; those are revealed in Finder instead.
+    /// Never ask the default application to launch scripts, executables, or apps from a document link.
     private static func isSafeToOpen(_ url: URL) -> Bool {
         guard let type = UTType(filenameExtension: url.pathExtension) else { return false }
         if type.conforms(to: .script) || type.conforms(to: .executable) || type.conforms(to: .application)
@@ -496,6 +540,19 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSSp
     }
 
     // MARK: Window
+
+    override func showWindow(_ sender: Any?) {
+        if let window {
+            window.tabGroup?.selectedWindow = window
+            if window.isMiniaturized { window.deminiaturize(sender) }
+        }
+        super.showWindow(sender)
+    }
+
+    /// The native tab bar's + button opens a file, just like Open in New Tab in the File menu.
+    @objc override func newWindowForTab(_ sender: Any?) {
+        (NSApp.delegate as? AppDelegate)?.showOpenPanel(sender)
+    }
 
     /// Preview / Source / Edit switch at the trailing edge of the title bar.
     private func addModeSwitch(to window: NSWindow) {
@@ -527,26 +584,6 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSSp
             window.setContentSize(NSSize(width: min(1100, visible.width - 80), height: min(1000, visible.height - 60)))
             window.center()
         }
-    }
-
-    /// After "Save As" (including the first save of an untitled document) the window shows and watches the new file.
-    func attach(to url: URL) {
-        let url = url.standardizedFileURL.resolvingSymlinksInPath()
-        fileURL = url
-        displayName = url.lastPathComponent
-        window?.title = displayName
-        window?.representedURL = url
-        watcher?.stop()
-        watcher = FileWatcher(url: url) { [weak self] in self?.loadFromDisk(force: false) }
-        NSDocumentController.shared.noteNewRecentDocumentURL(url)
-    }
-
-    /// The "+" button in the tab bar.
-    override func newWindowForTab(_ sender: Any?) {
-        guard let delegate = NSApp.delegate as? AppDelegate, let window,
-              let newWindow = delegate.openUntitled().window else { return }
-        window.addTabbedWindow(newWindow, ordered: .above)
-        newWindow.makeKeyAndOrderFront(nil)
     }
 
     func windowDidEndLiveResize(_ notification: Notification) { window?.saveFrame(usingName: Self.frameName) }

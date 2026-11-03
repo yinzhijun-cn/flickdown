@@ -10,6 +10,7 @@ extension DocumentWindowController {
     // MARK: Switching modes
 
     func setMode(_ new: ViewMode) {
+        guard isMarkdown else { return }
         modeSwitch.selectedSegment = new.rawValue
         guard new != mode else { return }
         if new != .edit { Prefs.sourceMode = new == .source }
@@ -33,7 +34,7 @@ extension DocumentWindowController {
     private func switchMode(to new: ViewMode, at line: Double) {
         guard let window else { return }
         if new != .preview, editor == nil { _ = makeEditor() }
-        // The preview's find bar belongs to preview mode; elsewhere find goes to the editor.
+        // Only preview mode uses the custom find bar; source and edit use the system find bar.
         if new != .preview { hideFindBar() }
         mode = new
         applyLayout()
@@ -62,6 +63,10 @@ extension DocumentWindowController {
         editor?.scrollView.removeFromSuperview()
         sourceOutline?.view.removeFromSuperview()
         splitView = nil
+        if !isMarkdown, let editor {
+            window.contentView = editor.scrollView
+            return
+        }
         guard mode != .preview, let editor else {
             previewPane.isHidden = false
             window.contentView = previewPane
@@ -91,9 +96,20 @@ extension DocumentWindowController {
     }
 
     func makeEditor() -> MarkdownEditor {
-        let editor = MarkdownEditor(zoom: Prefs.zoom)
-        let decoded = MarkdownRenderer.decode(lastSource ?? Data())
-        fileEncoding = decoded.encoding
+        let syntax: MarkdownEditor.Syntax
+        if isMarkdown {
+            syntax = .markdown
+        } else {
+            switch fileURL?.pathExtension.lowercased() {
+            case "sql": syntax = .sql
+            case "json": syntax = .json
+            case "yaml", "yml": syntax = .yaml
+            default: syntax = .plainText
+            }
+        }
+        let editor = MarkdownEditor(zoom: Prefs.zoom, syntax: syntax)
+        // Disk contents are validated on load; new text documents start with UTF-8 bytes.
+        let decoded = MarkdownRenderer.decode(lastSource ?? Data())!
         editor.setText(decoded.text)
         editor.onChange = { [weak self] in self?.editorChanged() }
         editor.onScroll = { [weak self] in self?.editorScrolled() }
@@ -140,6 +156,10 @@ extension DocumentWindowController {
 
     private func editorChanged() {
         window?.isDocumentEdited = true
+        if !isMarkdown {
+            updateEditedState()
+            return
+        }
         previewStale = true
         guard let editor else { return }
         // Refresh once typing pauses; bigger documents wait longer since each render is a full re-parse.
@@ -159,7 +179,7 @@ extension DocumentWindowController {
     }
 
     private func editorScrolled() {
-        guard mode != .preview, !editorSyncQueued else { return }
+        guard isMarkdown, mode != .preview, !editorSyncQueued else { return }
         editorSyncQueued = true
         DispatchQueue.main.async { [weak self] in
             MainActor.assumeIsolated {
@@ -193,40 +213,45 @@ extension DocumentWindowController {
         saveAs { _ in }
     }
 
-    /// Saves to the document's file; an untitled document asks where first. `completion(false)` if it wasn't saved.
+    /// An untitled document completes saving only after its save sheet finishes.
     func save(_ completion: @escaping (Bool) -> Void) {
         guard let fileURL else { return saveAs(completion) }
         completion(write(to: fileURL))
     }
 
-    /// Asks for a location, saves there, and from then on the window shows that file.
     func saveAs(_ completion: @escaping (Bool) -> Void) {
         guard let window else { return completion(false) }
         let panel = NSSavePanel()
-        panel.allowedContentTypes = [UTType("net.daringfireball.markdown")].compactMap { $0 }
-        panel.nameFieldStringValue = fileURL?.lastPathComponent ?? "\(displayName).md"
+        if isMarkdown {
+            panel.allowedContentTypes = [UTType("net.daringfireball.markdown")].compactMap { $0 }
+            panel.nameFieldStringValue = fileURL?.lastPathComponent ?? "\(displayName).md"
+        } else {
+            // Existing text files keep their extension, including unknown types and extensionless files.
+            if fileURL == nil { panel.allowedContentTypes = [.plainText] }
+            panel.nameFieldStringValue = displayName
+        }
         if let fileURL { panel.directoryURL = fileURL.deletingLastPathComponent() }
+        panel.canCreateDirectories = true
+        if editor == nil { _ = makeEditor() }
         panel.beginSheetModal(for: window) { [weak self] response in
             MainActor.assumeIsolated {
-                guard let self, response == .OK, let url = panel.url, self.write(to: url) else { return completion(false) }
-                self.attach(to: url)
-                // Relative images and links now resolve against the new folder.
-                if self.previewVisible { self.renderCurrent(keepScroll: true, followEditor: self.mode == .edit) }
-                completion(true)
+                guard let self, response == .OK, let url = panel.url else { return completion(false) }
+                completion(self.write(to: url))
             }
         }
     }
 
-    /// Writes the editor's text in the file's original encoding. Returns false if it couldn't be written.
-    private func write(to url: URL) -> Bool {
+    /// Saves the bytes, then binds first saves and Save As to their new file identity.
+    @discardableResult
+    func write(to url: URL) -> Bool {
         guard let editor, let window else { return true }
+        let url = url.standardizedFileURL.resolvingSymlinksInPath()
         let text = editor.text
         guard let data = text.data(using: fileEncoding) ?? text.data(using: .utf8) else { return false }
         do {
-            let fm = FileManager.default
-            if fm.fileExists(atPath: url.path) {
-                // Write a temporary copy, then swap it in: a failed write never leaves a half-written file,
-                // and the original's permissions and metadata are kept.
+            if FileManager.default.fileExists(atPath: url.path) {
+                // Swap in a complete copy, preserving the existing file's permissions and metadata.
+                let fm = FileManager.default
                 let dir = try fm.url(for: .itemReplacementDirectory, in: .userDomainMask, appropriateFor: url, create: true)
                 defer { try? fm.removeItem(at: dir) }
                 let temp = dir.appendingPathComponent(url.lastPathComponent)
@@ -242,6 +267,18 @@ extension DocumentWindowController {
         // Our own write must not look like an external change to the file watcher.
         lastSource = data
         editor.markSaved(text)
+        if fileURL != url {
+            fileURL = url
+            displayName = url.lastPathComponent
+            window.title = displayName
+            window.representedURL = url
+            window.tab.toolTip = url.path
+            watcher?.stop()
+            watcher = FileWatcher(url: url) { [weak self] in self?.loadFromDisk(force: false) }
+            NSDocumentController.shared.noteNewRecentDocumentURL(url)
+            // Relative images and links must now resolve against the new folder.
+            if previewVisible { renderCurrent(keepScroll: true, followEditor: mode == .edit) }
+        }
         updateEditedState()
         return true
     }
@@ -307,7 +344,11 @@ extension DocumentWindowController {
     }
 
     @objc func reloadDocument(_ sender: Any?) {
-        guard hasUnsavedChanges, let window else { return loadFromDisk(force: true) }
+        guard fileURL != nil else { return }
+        guard hasUnsavedChanges, let window else {
+            loadFromDisk(force: true)
+            return
+        }
         let alert = NSAlert()
         alert.messageText = L("放弃未存储的更改并重新载入？", "Discard unsaved changes and reload?")
         alert.addButton(withTitle: L("重新载入", "Reload"))

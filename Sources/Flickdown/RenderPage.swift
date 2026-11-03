@@ -22,7 +22,7 @@ final class RenderPage: NSObject, WKScriptMessageHandler {
                             injectionTime: .atDocumentEnd, forMainFrameOnly: true)
     }()
 
-    let webView: WKWebView
+    let webView: ViewerWebView
     private(set) var isReady = false
     var onReady: (() -> Void)?
     var onMessage: (([String: Any]) -> Void)?
@@ -43,6 +43,7 @@ final class RenderPage: NSObject, WKScriptMessageHandler {
     /// Also used to recover after the content process crashes.
     func loadTemplate() {
         isReady = false
+        webView.contextSelection = ""
         // Read access to "/" lets documents show images referenced by relative or absolute paths.
         webView.loadFileURL(Self.templateURL, allowingReadAccessTo: URL(fileURLWithPath: "/"))
     }
@@ -53,6 +54,8 @@ final class RenderPage: NSObject, WKScriptMessageHandler {
             isReady = true
             Bench.mark("template ready")
             onReady?()
+        } else if type == "contextSelection" {
+            webView.contextSelection = body["text"] as? String ?? ""
         } else {
             onMessage?(body)
         }
@@ -92,6 +95,8 @@ private final class WeakMessageHandler: NSObject, WKScriptMessageHandler {
 
 /// Drops context-menu items that would navigate away from the viewer page.
 final class ViewerWebView: WKWebView {
+    var contextSelection = ""
+
     private static let hidden: Set<String> = [
         "WKMenuItemIdentifierReload", "WKMenuItemIdentifierGoBack", "WKMenuItemIdentifierGoForward",
         "WKMenuItemIdentifierOpenLinkInNewWindow", "WKMenuItemIdentifierDownloadLinkedFile",
@@ -113,6 +118,7 @@ final class ViewerWebView: WKWebView {
         for item in menu.items where Self.hidden.contains(item.identifier?.rawValue ?? "") {
             menu.removeItem(item)
         }
+        SelectedTextMenu.addItems(to: menu, text: contextSelection, window: window)
         super.willOpenMenu(menu, with: event)
     }
 }

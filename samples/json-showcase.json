@@ -1,0 +1,14 @@
+{
+  "service": "Flickdown 配置示例",
+  "enabled": true,
+  "optional": null,
+  "retryCount": 3,
+  "threshold": -1.25e2,
+  "message": "保留原文：\"true\"、#、中文 😀",
+  "endpoint": "https://example.com/api#section",
+  "tags": ["json", "原生编辑器"],
+  "nested": {
+    "name": "语法高亮",
+    "ready": false
+  }
+}

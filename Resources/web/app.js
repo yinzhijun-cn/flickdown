@@ -663,6 +663,11 @@
 
   const selectedText = () => String(getSelection()).trim().slice(0, 200);
 
+  // Capture once for the native context menu; keep the full text, indentation and newlines.
+  document.addEventListener('contextmenu', () => {
+    post({ type: 'contextSelection', text: String(getSelection()) });
+  });
+
   // Highlighting, KaTeX, Mermaid, streamed pieces and re-renders all change the text nodes: re-run an
   // active search on the new DOM, keeping the current match number.
   let findRefresh = 0;

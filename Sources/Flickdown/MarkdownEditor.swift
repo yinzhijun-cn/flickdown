@@ -1,18 +1,23 @@
 import AppKit
 
-/// The Markdown source editor, used in source mode (on its own) and edit mode (beside the preview).
+/// The text editor, with Markdown, SQL, JSON and YAML colouring and optional Markdown headings.
 ///
 /// TextKit 1 with non-contiguous layout: mature, fast on large files, full input-method support.
-/// Syntax colouring is applied as temporary attributes to the visible lines only, so its cost
-/// doesn't grow with the file and it never triggers relayout.
+/// Syntax colouring uses temporary attributes on visible lines and never triggers relayout.
+/// The line index preserves the context of Markdown fences and multiline SQL/YAML tokens.
 @MainActor
 final class MarkdownEditor: NSObject, NSTextViewDelegate {
+    enum Syntax {
+        case plainText, markdown, sql, json, yaml
+    }
+
     let scrollView = NSScrollView()
     let textView: NSTextView
     var onChange: (() -> Void)?
     var onScroll: (() -> Void)?
 
     private let storage = NSTextStorage()
+    private let syntax: Syntax
     private let layoutManager = NSLayoutManager()
     private var baseAttributes: [NSAttributedString.Key: Any] = [:]
     private var savedText = ""
@@ -23,7 +28,8 @@ final class MarkdownEditor: NSObject, NSTextViewDelegate {
     private var scrollingProgrammatically = false
     private var ruler: LineNumberRuler!
 
-    init(zoom: Double) {
+    init(zoom: Double, syntax: Syntax) {
+        self.syntax = syntax
         storage.addLayoutManager(layoutManager)
         let container = NSTextContainer(size: NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
         container.widthTracksTextView = true
@@ -68,6 +74,14 @@ final class MarkdownEditor: NSObject, NSTextViewDelegate {
     }
 
     var text: String { textView.string }
+
+    func textView(_ view: NSTextView, menu: NSMenu, for event: NSEvent, at charIndex: Int) -> NSMenu? {
+        let range = view.selectedRange()
+        guard range.length > 0 else { return menu }
+        let text = (view.string as NSString).substring(with: range)
+        SelectedTextMenu.addItems(to: menu, text: text, window: view.window)
+        return menu
+    }
 
     var isDirty: Bool {
         if editedSinceSave, textView.string == savedText { editedSinceSave = false }
@@ -157,6 +171,9 @@ final class MarkdownEditor: NSObject, NSTextViewDelegate {
         var lineStarts: [Int] = [0]
         /// Line numbers of the opening and closing fence of each fenced code block (Int.max if unclosed).
         var fences: [(open: Int, close: Int)] = []
+        /// SQL state at each line's start; no full-document token list is needed.
+        var sqlStates: [SQLHighlighter.State] = []
+        var yamlStates: [YAMLHighlighter.State] = []
     }
 
     /// Start offset (UTF-16) of each line.
@@ -177,9 +194,17 @@ final class MarkdownEditor: NSObject, NSTextViewDelegate {
         var line = 0
         var start = 0
         var open: (line: Int, char: unichar, count: Int)?
+        var sqlState = SQLHighlighter.State.code
+        var yamlState = YAMLHighlighter.State()
 
         func endLine(at end: Int, next: Int) {
-            if let fence = Self.fence(in: s, line: NSRange(location: start, length: end - start)) {
+            if syntax == .sql {
+                idx.sqlStates.append(sqlState)
+                SQLHighlighter.scan(s, range: NSRange(location: start, length: end - start), state: &sqlState)
+            } else if syntax == .yaml {
+                idx.yamlStates.append(yamlState)
+                YAMLHighlighter.scan(s, range: NSRange(location: start, length: end - start), state: &yamlState)
+            } else if syntax == .markdown, let fence = Self.fence(in: s, line: NSRange(location: start, length: end - start)) {
                 if let o = open {
                     if fence.char == o.char, fence.count >= o.count, fence.bare {
                         idx.fences.append((o.line, line))
@@ -212,10 +237,13 @@ final class MarkdownEditor: NSObject, NSTextViewDelegate {
                 }
                 i += 1
             }
-            base += n
+            // A CRLF at the buffer boundary also consumes the next buffer's leading LF.
+            base += i
         }
         // A trailing newline leaves an empty last line, matching how md4c numbers lines; lineStarts already has it.
         if start < length { endLine(at: length, next: length) ; idx.lineStarts.removeLast() }
+        if syntax == .sql, idx.sqlStates.count < idx.lineStarts.count { idx.sqlStates.append(sqlState) }
+        if syntax == .yaml, idx.yamlStates.count < idx.lineStarts.count { idx.yamlStates.append(yamlState) }
         if let o = open { idx.fences.append((o.line, Int.max)) }
         cachedIndex = idx
         return idx
@@ -274,6 +302,7 @@ final class MarkdownEditor: NSObject, NSTextViewDelegate {
 
     /// ATX (`## Title`) and setext (underlined) headings outside fenced code, for the outline.
     func headings() -> [Heading] {
+        guard syntax == .markdown else { return [] }
         if let cachedHeadings { return cachedHeadings }
         let s = textView.string as NSString
         let starts = index().lineStarts
@@ -353,7 +382,7 @@ final class MarkdownEditor: NSObject, NSTextViewDelegate {
     private static let inlineRx = regex("(`[^`]+`)|(!?\\[[^\\]]*\\])(\\([^)]*\\))|(<!--.*?-->|</?[A-Za-z][^<>]*>)|(https?://[^\\s<>()]+)")
 
     private func queueHighlight() {
-        guard !highlightQueued else { return }
+        guard syntax != .plainText, !highlightQueued else { return }
         highlightQueued = true
         DispatchQueue.main.async { [weak self] in
             MainActor.assumeIsolated {
@@ -369,19 +398,48 @@ final class MarkdownEditor: NSObject, NSTextViewDelegate {
         let origin = textView.textContainerOrigin
         let glyphs = layoutManager.glyphRange(forBoundingRect: visible.offsetBy(dx: -origin.x, dy: -origin.y), in: container)
         let s = textView.string as NSString
-        let range = s.lineRange(for: layoutManager.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil))
+        let characters = layoutManager.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
+        let idx = index()
+        let firstLine = lineNumber(at: characters.location)
+        let lastLine = lineNumber(at: max(characters.location, NSMaxRange(characters) - 1))
+        let end = lastLine + 1 < idx.lineStarts.count ? idx.lineStarts[lastLine + 1] : s.length
+        let range = NSRange(location: idx.lineStarts[firstLine], length: end - idx.lineStarts[firstLine])
         layoutManager.removeTemporaryAttribute(.foregroundColor, forCharacterRange: range)
 
-        var line = lineNumber(at: range.location)
-        var pos = range.location
-        while pos < NSMaxRange(range) {
-            let lineRange = s.lineRange(for: NSRange(location: pos, length: 0))
-            var content = lineRange
+        // Use the same CR/LF boundaries as the index. Unicode separators can be string content.
+        for line in firstLine...lastLine {
+            let start = idx.lineStarts[line]
+            let lineEnd = line + 1 < idx.lineStarts.count ? idx.lineStarts[line + 1] : s.length
+            var content = NSRange(location: start, length: lineEnd - start)
             while content.length > 0, Self.isNewline(s.character(at: NSMaxRange(content) - 1)) { content.length -= 1 }
-            colour(line: s.substring(with: content), at: content.location, kind: kind(ofLine: line))
-            pos = NSMaxRange(lineRange)
-            line += 1
+            switch syntax {
+            case .markdown:
+                colour(line: s.substring(with: content), at: content.location, kind: kind(ofLine: line))
+            case .sql:
+                var state = idx.sqlStates[line]
+                SQLHighlighter.scan(s, range: content, state: &state, emit: applyHighlight)
+            case .json:
+                JSONHighlighter.scan(s, range: content, emit: applyHighlight)
+            case .yaml:
+                var state = idx.yamlStates[line]
+                YAMLHighlighter.scan(s, range: content, state: &state, emit: applyHighlight)
+            case .plainText:
+                break
+            }
         }
+    }
+
+    private func applyHighlight(_ range: NSRange, _ kind: SyntaxTokenKind) {
+        let color: NSColor
+        switch kind {
+        case .keyword, .literal: color = .systemPurple
+        case .key, .identifier, .anchor: color = .systemTeal
+        case .string: color = .systemRed
+        case .number: color = .systemBlue
+        case .comment, .punctuation: color = .secondaryLabelColor
+        case .tag: color = .systemOrange
+        }
+        layoutManager.addTemporaryAttribute(.foregroundColor, value: color, forCharacterRange: range)
     }
 
     private func colour(line: String, at base: Int, kind: LineKind) {

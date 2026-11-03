@@ -1,0 +1,24 @@
+# YAML 配置示例
+service: Flickdown
+enabled: true
+optional: null
+retryCount: 3
+threshold: -1.25e2
+message: "保留原文：\"true\"、#、中文 😀"
+endpoint: https://example.com/api#section
+tags: [yaml, 原生编辑器]
+
+defaults: &defaults
+  timeout: 30
+  region: 'it''s ready'
+development:
+  <<: *defaults
+  enabled: false
+
+description: |
+  多行文本中的 #、true、123 按字符串显示。
+  name: 这一行也属于字符串。
+summary: >-
+  这是折叠文本。
+  会持续到缩进结束。
+version: !!str 1.2

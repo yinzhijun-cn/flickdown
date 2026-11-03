@@ -25,5 +25,9 @@ let package = Package(
             dependencies: ["CMd4c"],
             path: "Sources/md-bench"
         ),
+        .testTarget(
+            name: "FlickdownTests",
+            dependencies: ["Flickdown"]
+        ),
     ]
 )
