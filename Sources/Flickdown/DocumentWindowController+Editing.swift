@@ -80,19 +80,21 @@ extension DocumentWindowController {
         splitView = split
         if mode == .source {
             let outline = sourceOutline ?? makeOutline()
-            split.addArrangedSubview(outline.view)
-            split.addArrangedSubview(editor.scrollView)
-            // Window resizes go to the editor; the outline keeps its width.
-            split.setHoldingPriority(NSLayoutConstraint.Priority(260), forSubviewAt: 0)
-            split.setHoldingPriority(NSLayoutConstraint.Priority(250), forSubviewAt: 1)
+            outline.editorPane.addArrangedSubview(editor.scrollView)
+            split.addArrangedSubview(outline.editorPane)
             split.adjustSubviews()
-            split.setPosition(240, ofDividerAt: 0)
         } else {
-            split.addArrangedSubview(editor.scrollView)
-            split.addArrangedSubview(previewPane)
-            split.adjustSubviews()
-            split.setPosition(split.bounds.width / 2, ofDividerAt: 0)
+            layoutEditPanes(in: split, editor: editor, preview: previewPane)
         }
+    }
+
+    func layoutEditPanes(in split: NSSplitView, editor: MarkdownEditor, preview: PreviewPane) {
+        // Source mode's stack disables frame-based layout; restore it before the split sizes the editor.
+        editor.scrollView.translatesAutoresizingMaskIntoConstraints = true
+        split.addArrangedSubview(editor.scrollView)
+        split.addArrangedSubview(preview)
+        split.adjustSubviews()
+        split.setPosition(split.bounds.width / 2, ofDividerAt: 0)
     }
 
     func makeEditor() -> MarkdownEditor {
@@ -119,6 +121,8 @@ extension DocumentWindowController {
 
     private func makeOutline() -> SourceOutline {
         let outline = SourceOutline()
+        outline.toggleButton.target = self
+        outline.toggleButton.action = #selector(toggleOutline(_:))
         outline.onSelect = { [weak self] line in
             guard let editor = self?.editor else { return }
             editor.scroll(toLine: Double(line + 1))
@@ -133,13 +137,23 @@ extension DocumentWindowController {
     func refreshOutline() {
         guard mode == .source, let editor, let outline = sourceOutline, let splitView else { return }
         outline.update(editor.headings())
-        let hide = !Prefs.showOutline || outline.isEmpty
-        if outline.view.isHidden != hide {
-            outline.view.isHidden = hide
-            splitView.adjustSubviews()
-            if !hide { splitView.setPosition(240, ofDividerAt: 0) }
+        if Prefs.showOutline && !outline.isEmpty {
+            if outline.view.superview == nil {
+                splitView.insertArrangedSubview(outline.view, at: 0)
+                // Window resizes go to the editor; the outline keeps its width.
+                splitView.setHoldingPriority(NSLayoutConstraint.Priority(260), forSubviewAt: 0)
+                splitView.adjustSubviews()
+                splitView.setPosition(240, ofDividerAt: 0)
+            }
+            outline.placeToggle(expanded: true)
+            outline.highlight(line: Int(editor.topLine()) - 1)
+        } else {
+            outline.placeToggle(expanded: false)
+            if outline.view.superview != nil {
+                outline.view.removeFromSuperview()
+                splitView.adjustSubviews()
+            }
         }
-        outline.highlight(line: Int(editor.topLine()) - 1)
     }
 
     @objc func togglePreviewPane(_ sender: Any?) {

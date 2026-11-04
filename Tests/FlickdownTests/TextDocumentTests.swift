@@ -1,5 +1,6 @@
 import AppKit
 import Testing
+import WebKit
 @testable import Flickdown
 
 @Suite("文本文件", .serialized)
@@ -108,5 +109,98 @@ struct TextDocumentTests {
         let html = MarkdownRenderer.htmlChunks(from: Data(text.utf8)).joined()
         #expect(html.contains("<h1>标题</h1>"))
         #expect(html.contains("<strong>加粗</strong>"))
+    }
+
+    @Test("Markdown 源码目录可以从页面收起再展开，只有一个标题时隐藏按钮")
+    func sourceOutlineButtonCollapsesAndReopensOutline() throws {
+        _ = NSApplication.shared
+        let defaults = UserDefaults.standard
+        let sourceMode = defaults.object(forKey: "sourceMode")
+        let showOutline = defaults.object(forKey: "showOutline")
+        defer {
+            defaults.set(sourceMode, forKey: "sourceMode")
+            defaults.set(showOutline, forKey: "showOutline")
+        }
+        Prefs.sourceMode = true
+        Prefs.showOutline = true
+
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).md")
+        try Data("# 文档\n## 章节\n".utf8).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let document = try #require(DocumentWindowController(fileURL: url))
+        defer { document.close() }
+        let window = try #require(document.window)
+        window.setContentSize(NSSize(width: 1000, height: 600))
+        let outline = try #require(document.sourceOutline)
+        let button = outline.toggleButton
+        let content = try #require(document.splitView)
+        let editor = try #require(document.editor)
+
+        func clickOutlineButton() throws {
+            window.layoutIfNeeded()
+            try #require(button.window === window && !button.isHiddenOrHasHiddenAncestor)
+            try #require(!button.bounds.isEmpty)
+            let center = NSPoint(x: button.bounds.midX, y: button.bounds.midY)
+            let hit = try #require(content.hitTest(button.convert(center, to: content.superview)))
+            try #require(hit === button || hit.isDescendant(of: button))
+            let frame = button.convert(button.bounds, to: content)
+            if Prefs.showOutline {
+                let sidebar = outline.view.convert(outline.view.bounds, to: content)
+                #expect(abs(sidebar.maxX - frame.maxX) < 25)
+            } else {
+                #expect(frame.minX < 25)
+                #expect(editor.scrollView.bounds.width == content.bounds.width)
+            }
+            button.performClick(nil)
+        }
+        #expect(content.arrangedSubviews == [outline.view, outline.editorPane])
+
+        try clickOutlineButton()
+        #expect(!Prefs.showOutline)
+        #expect(content.arrangedSubviews == [outline.editorPane])
+
+        try clickOutlineButton()
+        #expect(Prefs.showOutline)
+        #expect(content.arrangedSubviews == [outline.view, outline.editorPane])
+
+        try Data("# 文档\n".utf8).write(to: url)
+        #expect(document.loadFromDisk(force: true))
+        #expect(content.arrangedSubviews == [outline.editorPane])
+        #expect(button.window == nil || button.isHiddenOrHasHiddenAncestor)
+    }
+
+    @Test("从源码切换到编辑分栏后，正文可见且两栏等宽")
+    func editPanesAfterSourceMode() throws {
+        _ = NSApplication.shared
+        let defaults = UserDefaults.standard
+        let sourceMode = defaults.object(forKey: "sourceMode")
+        defer { defaults.set(sourceMode, forKey: "sourceMode") }
+        Prefs.sourceMode = true
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).md")
+        try Data("# 文档\n## 章节\n".utf8).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let document = try #require(DocumentWindowController(fileURL: url))
+        defer { document.close() }
+        let window = try #require(document.window)
+        let editor = try #require(document.editor)
+        window.setContentSize(NSSize(width: 1200, height: 650))
+        window.layoutIfNeeded()
+
+        document.mode = .edit
+        editor.scrollView.removeFromSuperview()
+        document.sourceOutline?.view.removeFromSuperview()
+        let split = NSSplitView(frame: try #require(window.contentView).bounds)
+        split.isVertical = true
+        split.dividerStyle = .thin
+        split.delegate = document
+        window.contentView = split
+        let preview = PreviewPane(webView: WKWebView(frame: NSRect(x: 0, y: 0, width: 1000, height: 800)))
+        document.layoutEditPanes(in: split, editor: editor, preview: preview)
+        editor.scroll(toLine: 1)
+        window.makeFirstResponder(editor.textView)
+        window.layoutIfNeeded()
+
+        #expect(abs(editor.scrollView.frame.width - preview.frame.width) <= split.dividerThickness)
+        #expect(editor.textView.visibleRect.width > 500)
     }
 }

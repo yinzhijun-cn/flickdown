@@ -4,10 +4,16 @@ import AppKit
 /// at the top of the editor highlighted. Matches the look of the preview's outline.
 @MainActor
 final class SourceOutline: NSObject, NSTableViewDataSource, NSTableViewDelegate {
-    let view = NSScrollView()
+    let view = NSStackView()
+    let editorPane = NSStackView()
+    let toggleButton = NSButton()
     /// Called with the 0-based source line of a heading the user clicked.
     var onSelect: ((Int) -> Void)?
 
+    private let header = NSView()
+    private let title = NSTextField(labelWithString: L("目录", "CONTENTS"))
+    private lazy var buttonLeading = toggleButton.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 16)
+    private lazy var buttonTrailing = toggleButton.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -10)
     private let table = NSTableView()
     private var headings: [MarkdownEditor.Heading] = []
     private var minLevel = 1
@@ -36,16 +42,59 @@ final class SourceOutline: NSObject, NSTableViewDataSource, NSTableViewDelegate 
         table.target = self
         table.action = #selector(clicked)
 
-        view.documentView = table
-        view.hasVerticalScroller = true
-        view.autohidesScrollers = true
-        view.drawsBackground = true
-        view.backgroundColor = Self.background
-        view.automaticallyAdjustsContentInsets = false
-        view.contentInsets = NSEdgeInsets(top: 10, left: 0, bottom: 12, right: 0)
+        let scrollView = NSScrollView()
+        scrollView.documentView = table
+        scrollView.hasVerticalScroller = true
+        scrollView.autohidesScrollers = true
+        scrollView.drawsBackground = true
+        scrollView.backgroundColor = Self.background
+        scrollView.automaticallyAdjustsContentInsets = false
+        scrollView.contentInsets = NSEdgeInsets(top: 0, left: 0, bottom: 12, right: 0)
+
+        for pane in [view, editorPane] {
+            pane.orientation = .vertical
+            pane.alignment = .width
+            pane.spacing = 0
+        }
+        view.addArrangedSubview(scrollView)
+        title.font = .systemFont(ofSize: 11, weight: .semibold)
+        title.textColor = .secondaryLabelColor
+        toggleButton.bezelStyle = .push
+        toggleButton.controlSize = .small
+        for control in [title, toggleButton] {
+            control.translatesAutoresizingMaskIntoConstraints = false
+            header.addSubview(control)
+        }
+        NSLayoutConstraint.activate([
+            title.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 16),
+            title.centerYAnchor.constraint(equalTo: toggleButton.centerYAnchor),
+            toggleButton.topAnchor.constraint(equalTo: header.topAnchor, constant: 10),
+            toggleButton.bottomAnchor.constraint(equalTo: header.bottomAnchor, constant: -6),
+        ])
     }
 
     var isEmpty: Bool { headings.count < 2 }
+
+    /// Keep the same control reachable above the editor when its sidebar is hidden.
+    func placeToggle(expanded: Bool) {
+        guard !isEmpty else {
+            header.removeFromSuperview()
+            return
+        }
+        let pane = expanded ? view : editorPane
+        guard header.superview !== pane else { return }
+        let focused = toggleButton.window?.firstResponder === toggleButton
+        header.removeFromSuperview()
+        NSLayoutConstraint.deactivate([buttonLeading, buttonTrailing])
+        (expanded ? buttonTrailing : buttonLeading).isActive = true
+        title.isHidden = !expanded
+        toggleButton.title = expanded ? "«" : L("☰ 目录", "☰ Contents")
+        let actionLabel = expanded ? L("收起目录", "Hide Contents") : L("展开目录", "Show Contents")
+        toggleButton.toolTip = actionLabel
+        toggleButton.setAccessibilityLabel(actionLabel)
+        pane.insertArrangedSubview(header, at: 0)
+        if focused { toggleButton.window?.makeFirstResponder(toggleButton) }
+    }
 
     func update(_ headings: [MarkdownEditor.Heading]) {
         guard headings != self.headings else { return }
