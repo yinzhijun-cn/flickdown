@@ -5,6 +5,27 @@ import Testing
 @Suite("文档标签", .serialized)
 @MainActor
 struct DocumentTabTests {
+    @Test("多行文本标签获得焦点后可以在原来的文末光标处继续输入")
+    func refocusingMultilineTextTabKeepsCaretAtEnd() throws {
+        _ = NSApplication.shared
+        let first = DocumentWindowController(selectedText: "")
+        defer { first.close() }
+        let firstWindow = try #require(first.window)
+        firstWindow.setContentSize(NSSize(width: 1512, height: 835))
+        let text = String(repeating: "0123456789abcdef0123456789abcdef01234567  sample.txt\n", count: 38)
+        let second = DocumentWindowController(selectedText: text, tabbedWith: firstWindow)
+        defer { second.close() }
+        let view = try #require(second.editor?.textView)
+        #expect(second.window?.firstResponder === view)
+        view.moveToEndOfDocument(nil)
+
+        first.showWindow(nil)
+        second.showWindow(nil)
+        #expect(second.window?.firstResponder === view)
+        view.insertText("末尾", replacementRange: view.selectedRange())
+        #expect(view.string == text + "末尾")
+    }
+
     @Test("打开、切换和关闭标签保留独立的编辑、撤销和保存状态")
     func documentsOpenInTabsAndKeepIndependentState() throws {
         _ = NSApplication.shared

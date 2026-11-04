@@ -35,7 +35,7 @@ final class MarkdownEditor: NSObject, NSTextViewDelegate {
         container.widthTracksTextView = true
         layoutManager.addTextContainer(container)
         layoutManager.allowsNonContiguousLayout = true
-        textView = NSTextView(frame: .zero, textContainer: container)
+        textView = EditorTextView(frame: .zero, textContainer: container)
         super.init()
 
         textView.minSize = .zero
@@ -494,6 +494,17 @@ final class MarkdownEditor: NSObject, NSTextViewDelegate {
         queueHighlight()
         ruler.needsDisplay = true
         if !scrollingProgrammatically { onScroll?() }
+    }
+}
+
+private final class EditorTextView: NSTextView {
+    override func becomeFirstResponder() -> Bool {
+        // Without layout at the caret, TextKit can loop while focusing a newly selected tab.
+        if let storage = textStorage, storage.length > 0 {
+            let character = min(selectedRange().location, storage.length - 1)
+            layoutManager?.ensureLayout(forCharacterRange: NSRange(location: character, length: 1))
+        }
+        return super.becomeFirstResponder()
     }
 }
 
