@@ -38,6 +38,7 @@ extension DocumentWindowController {
         if new != .preview { hideFindBar() }
         mode = new
         applyLayout()
+        refreshStatusBar()
         if new == .preview {
             window.makeFirstResponder(webView)
         } else if let editor {
@@ -58,25 +59,25 @@ extension DocumentWindowController {
 
     /// Preview: the web view. Source: outline + editor. Edit: editor + preview.
     func applyLayout() {
-        guard let window else { return }
         loadedPane?.removeFromSuperview()
         editor?.scrollView.removeFromSuperview()
         sourceOutline?.view.removeFromSuperview()
         splitView = nil
         if !isMarkdown, let editor {
-            window.contentView = editor.scrollView
+            content.body = editor.scrollView
             return
         }
         guard mode != .preview, let editor else {
             previewPane.isHidden = false
-            window.contentView = previewPane
+            content.body = previewPane
             return
         }
-        let split = NSSplitView(frame: window.contentView?.bounds ?? .zero)
+        let split = DocumentSplitView(frame: content.bodyBounds)
         split.isVertical = true
         split.dividerStyle = .thin
         split.delegate = self
-        window.contentView = split
+        split.onDividerDoubleClick = { [weak self] in self?.resetEditSplit() }
+        content.body = split
         splitView = split
         if mode == .source {
             let outline = sourceOutline ?? makeOutline()
@@ -94,7 +95,14 @@ extension DocumentWindowController {
         split.addArrangedSubview(editor.scrollView)
         split.addArrangedSubview(preview)
         split.adjustSubviews()
-        split.setPosition(split.bounds.width / 2, ofDividerAt: 0)
+        split.setPosition(split.bounds.width * Prefs.editSplitRatio, ofDividerAt: 0)
+    }
+
+    /// Double-clicking the divider in edit mode splits the window evenly again.
+    private func resetEditSplit() {
+        guard mode == .edit, let splitView else { return }
+        Prefs.editSplitRatio = 0.5
+        splitView.setPosition(splitView.bounds.width / 2, ofDividerAt: 0)
     }
 
     func makeEditor() -> MarkdownEditor {
@@ -115,6 +123,8 @@ extension DocumentWindowController {
         editor.setText(decoded.text)
         editor.onChange = { [weak self] in self?.editorChanged() }
         editor.onScroll = { [weak self] in self?.editorScrolled() }
+        editor.onSelectionChange = { [weak self] in self?.refreshStatusBar() }
+        if isMarkdown { editor.maxTextWidth = Prefs.pageWidth.maxTextWidth }
         self.editor = editor
         return editor
     }
@@ -161,7 +171,7 @@ extension DocumentWindowController {
         previewPane.isHidden.toggle()
         splitView.adjustSubviews()
         if !previewPane.isHidden {
-            splitView.setPosition(splitView.bounds.width / 2, ofDividerAt: 0)
+            splitView.setPosition(splitView.bounds.width * Prefs.editSplitRatio, ofDividerAt: 0)
             renderCurrent(keepScroll: true, followEditor: true)
         }
     }
@@ -170,25 +180,23 @@ extension DocumentWindowController {
 
     private func editorChanged() {
         window?.isDocumentEdited = true
-        if !isMarkdown {
-            updateEditedState()
-            return
-        }
-        previewStale = true
+        if isMarkdown { previewStale = true }
         guard let editor else { return }
         // Refresh once typing pauses; bigger documents wait longer since each render is a full re-parse.
-        pendingPreviewRender?.cancel()
+        pendingEditRefresh?.cancel()
         let length = editor.textView.textStorage?.length ?? 0
         let delay = length < 100_000 ? 0.03 : min(Double(length) / 1_000_000 * 0.3, 1.5)
         let work = DispatchWorkItem { [weak self] in
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.updateEditedState()
+                self.refreshWordCount(editor.text)
+                guard self.isMarkdown else { return }
                 self.refreshOutline()
                 if self.previewVisible { self.renderCurrent(keepScroll: true, followEditor: true) }
             }
         }
-        pendingPreviewRender = work
+        pendingEditRefresh = work
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
@@ -207,6 +215,13 @@ extension DocumentWindowController {
                 }
             }
         }
+    }
+
+    /// Remembers the edit-mode split when the user drags the divider (not when the window resizes).
+    func splitViewDidResizeSubviews(_ notification: Notification) {
+        guard mode == .edit, let splitView, previewPane.superview === splitView, !previewPane.isHidden,
+              NSApp.currentEvent?.type == .leftMouseDragged, let editor, splitView.bounds.width > 0 else { return }
+        Prefs.editSplitRatio = editor.scrollView.frame.width / splitView.bounds.width
     }
 
     func splitView(_ splitView: NSSplitView, constrainMinCoordinate proposed: CGFloat, ofSubviewAt index: Int) -> CGFloat {
@@ -399,5 +414,20 @@ extension DocumentWindowController {
                 }
             }
         }
+    }
+}
+
+/// The split view of source and edit mode; double-clicking its divider calls `onDividerDoubleClick`.
+final class DocumentSplitView: NSSplitView {
+    var onDividerDoubleClick: (() -> Void)?
+
+    override func mouseDown(with event: NSEvent) {
+        let x = convert(event.locationInWindow, from: nil).x
+        if event.clickCount == 2, arrangedSubviews.count > 1, let first = arrangedSubviews.first,
+           abs(x - first.frame.maxX - dividerThickness / 2) <= 4 {
+            onDividerDoubleClick?()
+            return
+        }
+        super.mouseDown(with: event)
     }
 }

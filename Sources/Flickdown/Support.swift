@@ -22,6 +22,12 @@ enum Prefs {
         set { UserDefaults.standard.set(newValue, forKey: "zoom") }
     }
 
+    /// The editor's share of the window width in edit mode.
+    static var editSplitRatio: Double {
+        get { let r = UserDefaults.standard.double(forKey: "editSplitRatio"); return r == 0 ? 0.5 : r }
+        set { UserDefaults.standard.set(newValue, forKey: "editSplitRatio") }
+    }
+
     static var pageWidth: PageWidth {
         get { UserDefaults.standard.string(forKey: "pageWidth").flatMap(PageWidth.init) ?? .standard }
         set { UserDefaults.standard.set(newValue.rawValue, forKey: "pageWidth") }
@@ -31,6 +37,15 @@ enum Prefs {
 /// The preview's text column width; the raw value is the page's `data-width` (web/index.html sets the widths).
 enum PageWidth: String {
     case standard, wide, full
+
+    /// The editor's text column cap at 100% zoom, matching the preview's column (`.markdown-body` max-width).
+    var maxTextWidth: CGFloat? {
+        switch self {
+        case .standard: 860
+        case .wide: 1200
+        case .full: nil
+        }
+    }
 }
 
 /// Startup and render timing, enabled with FLICK_BENCH=1.

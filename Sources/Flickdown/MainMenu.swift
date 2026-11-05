@@ -53,6 +53,11 @@ enum MainMenu {
         find.addItem(finder(L("使用所选内容查找", "Use Selection for Find"), .setSearchString, "e"))
         edit.addItem(parent(L("查找", "Find"), find))
 
+        let format = submenu(of: bar, L("格式", "Format"))
+        format.addItem(item(L("粗体", "Bold"), #selector(DocumentWindowController.toggleBold(_:)), "b"))
+        format.addItem(item(L("斜体", "Italic"), #selector(DocumentWindowController.toggleItalic(_:)), "i"))
+        format.addItem(item(L("链接", "Link"), #selector(DocumentWindowController.insertLink(_:)), "k"))
+
         let view = submenu(of: bar, L("显示", "View"))
         for (mode, title, key) in [(ViewMode.preview, L("预览", "Preview"), "1"), (.source, L("源码", "Source"), "2"),
                                    (.edit, L("编辑", "Edit"), "3")] {

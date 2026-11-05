@@ -96,29 +96,38 @@ body {
 #flick-toc a[data-l="5"] { padding-left: 58px; }
 #flick-toc a[data-l="6"] { padding-left: 70px; }
 
-/* Floating buttons: outline switch at the top left, page width switch at the top right */
-#flick-toc-toggle, #flick-width {
-  position: fixed;
-  top: 12px;
+/* Icon buttons: outline switch at the top left, page width switch at the top right, copy on a hovered code block.
+   Faint until hovered, like the source mode's native outline switch. */
+#flick-toc-toggle, #flick-width, #flick-copy {
+  display: flex;
+  align-items: center;
+  gap: 5px;
   z-index: 10;
-  padding: 3px 10px;
-  border: 1px solid var(--border-soft);
+  padding: 3px 7px;
+  border: 1px solid transparent;
   border-radius: 6px;
   background: var(--bg);
   color: var(--muted);
   font: 12px/1.5 -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
-  opacity: .5;
+  white-space: nowrap;
+  opacity: .6;
   cursor: pointer;
   -webkit-user-select: none;
   user-select: none;
 }
+#flick-toc-toggle svg, #flick-width svg, #flick-copy svg { width: 14px; height: 14px; flex: none; }
+#flick-toc-toggle span:empty { display: none; }
+#flick-toc-toggle:hover, #flick-width:hover, #flick-copy:hover { opacity: 1; color: var(--fg); border-color: var(--border-soft); }
+#flick-toc-toggle, #flick-width { position: fixed; top: 12px; }
 #flick-width { right: 16px; }
-#flick-width:empty { display: none; } /* until the first render sets the width */
+body:not([data-width]) #flick-width { display: none; } /* until the first render sets the width */
 #flick-toc-toggle { display: none; left: 16px; }
-.flick-has-toc #flick-toc-toggle { display: block; }
+.flick-has-toc #flick-toc-toggle { display: flex; }
 /* With the outline open, the button sits at the right end of its title row. */
-.flick-toc-open.flick-has-toc #flick-toc-toggle { left: 250px; transform: translateX(-100%); }
-#flick-toc-toggle:hover, #flick-width:hover { opacity: 1; color: var(--fg); }
+.flick-toc-open.flick-has-toc #flick-toc-toggle { left: 250px; transform: translateX(-100%); background: var(--toc-bg); }
+/* Placed by app.js at the top right of the code block under the pointer. */
+#flick-copy { position: absolute; display: none; transform: translateX(-100%); background: var(--code-bg); }
+#flick-copy.flick-show { display: flex; }
 
 /* Document */
 .markdown-body { max-width: 860px; margin: 0 auto; }
@@ -235,7 +244,7 @@ body {
   #flick-toc-toggle { display: none !important; } /* the outline does not fit at this width */
 }
 @media print {
-  #flick-toc, #flick-toc-toggle, #flick-width { display: none !important; }
+  #flick-toc, #flick-toc-toggle, #flick-width, #flick-copy { display: none !important; }
   #flick-main { margin: 0 !important; padding: 0; }
   .markdown-body pre { white-space: pre-wrap; }
 }
@@ -243,8 +252,9 @@ body {
 </head>
 <body>
 <nav id="flick-toc"><div id="flick-toc-title"></div><div id="flick-toc-list"></div></nav>
-<button id="flick-toc-toggle" type="button"></button>
-<button id="flick-width" type="button"></button>
+<button id="flick-toc-toggle" type="button"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.5" y="2.5" width="13" height="11" rx="2"/><path d="M6 2.5v11"/></svg><span></span></button>
+<button id="flick-width" type="button"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 8h13M4.5 5 1.5 8l3 3M11.5 5l3 3-3 3"/></svg><span></span></button>
+<button id="flick-copy" type="button"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="5.5" y="5.5" width="8" height="9" rx="1.5"/><path d="M10.5 3.5V3A1.5 1.5 0 0 0 9 1.5H4A1.5 1.5 0 0 0 2.5 3v6A1.5 1.5 0 0 0 4 10.5h.5"/></svg><span></span></button>
 <main id="flick-main"><article id="flick-content" class="markdown-body"></article></main>
 </body>
 </html>

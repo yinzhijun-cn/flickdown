@@ -28,7 +28,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSSp
         page.webView.navigationDelegate = self
         page.webView.uiDelegate = self
         page.webView.pageZoom = Prefs.zoom
-        page.webView.underPageBackgroundColor = Self.pageBackground
+        page.webView.underPageBackgroundColor = Theme.background
         page.onReady = { [weak self] in self?.pageDidLoad() }
         page.onMessage = { [weak self] in self?.handle($0) }
         loadedPage = page
@@ -53,6 +53,10 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSSp
         editor.onFinderAction = { [weak self] sender in self?.performTextFinderAction(sender) }
         return editor
     }()
+    /// The mode's view above the status bar.
+    let content = DocumentContentView()
+    private var wordCount = 0
+    private var wordCountRequest = 0
     var watcher: FileWatcher?
     /// Last loaded/saved bytes, or the initial selection before its first save.
     var lastSource: Data?
@@ -74,7 +78,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSSp
     /// The preview was rendered with source-line marks, so it can be scrolled to an editor line.
     var previewHasLines = false
     var modeRequest = 0
-    var pendingPreviewRender: DispatchWorkItem?
+    var pendingEditRefresh: DispatchWorkItem?
     var editorSyncQueued = false
     var askingAboutExternalChange = false
     var suddenTerminationDisabled = false
@@ -94,6 +98,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSSp
         let editor = makeEditor()
         editor.markSaved("")
         updateEditedState()
+        refreshWordCount(selectedText)
         showDocument(tabbedWith: tabTarget)
     }
 
@@ -125,11 +130,15 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSSp
         window.title = displayName
         window.representedURL = documentURL
         window.tab.toolTip = documentURL?.path
-        window.backgroundColor = Self.pageBackground
+        window.backgroundColor = Theme.background
+        // The title bar takes the page's colour, so window and document read as one surface.
+        window.titlebarAppearsTransparent = true
+        window.titlebarSeparatorStyle = .none
         super.init(window: window)
 
+        window.contentView = content
         window.delegate = self
-        if mode == .preview { window.contentView = previewPane }
+        if mode == .preview { content.body = previewPane }
         if isMarkdown { addModeSwitch(to: window) }
         Bench.mark("window created")
     }
@@ -146,6 +155,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSSp
             applyLayout()
             refreshOutline()
         }
+        refreshStatusBar()
 
         // Show the window right away rather than after the first render, so WebKit's first-visibility
         // setup overlaps with page loading. The background matches the page, so nothing flashes.
@@ -170,13 +180,6 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSSp
                 }
             }
         }
-    }
-
-    /// Matches the page's CSS background so nothing flashes before the first paint.
-    private static let pageBackground = NSColor(name: nil) { appearance in
-        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-            ? NSColor(srgbRed: 0x1E / 255.0, green: 0x1F / 255.0, blue: 0x22 / 255.0, alpha: 1)
-            : .white
     }
 
     required init?(coder: NSCoder) { fatalError("not supported") }
@@ -226,6 +229,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSSp
         } else {
             previewStale = true
         }
+        refreshWordCount(decoded.text)
         return true
     }
 
@@ -326,7 +330,13 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSSp
         case "toggleOutline":
             toggleOutline(nil)
         case "pageWidth":
-            if let width = (message["width"] as? String).flatMap(PageWidth.init) { Prefs.pageWidth = width }
+            if let width = (message["width"] as? String).flatMap(PageWidth.init) {
+                Prefs.pageWidth = width
+                editor?.maxTextWidth = width.maxTextWidth
+            }
+        case "copy":
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(message["text"] as? String ?? "", forType: .string)
         case "find":
             loadedPane?.loadedFindBar?.setResult(count: message["count"] as? Int ?? 0, current: message["current"] as? Int ?? 0,
                                           capped: message["capped"] as? Bool ?? false)
@@ -371,6 +381,43 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSSp
         guard isMarkdown, let width = (sender.representedObject as? String).flatMap(PageWidth.init) else { return }
         Prefs.pageWidth = width
         loadedPage?.webView.evaluateJavaScript("FLICK.setPageWidth('\(width.rawValue)')")
+        editor?.maxTextWidth = width.maxTextWidth
+    }
+
+    // MARK: Formatting (Format menu, Markdown editor only)
+
+    @objc func toggleBold(_ sender: Any?) { editor?.toggleEmphasis("**") }
+    @objc func toggleItalic(_ sender: Any?) { editor?.toggleEmphasis("*") }
+    @objc func insertLink(_ sender: Any?) { editor?.insertLink() }
+
+    // MARK: Status bar
+
+    /// Counts words off the main thread; only the latest request updates the status bar.
+    func refreshWordCount(_ text: String) {
+        wordCountRequest += 1
+        let request = wordCountRequest
+        Task.detached(priority: .utility) { [weak self] in
+            let words = StatusBar.wordCount(text)
+            await MainActor.run {
+                guard let self, request == self.wordCountRequest else { return }
+                self.wordCount = words
+                self.refreshStatusBar()
+            }
+        }
+    }
+
+    func refreshStatusBar() {
+        let caret = mode == .preview ? nil : editor?.caretPosition()
+        content.statusBar.show(words: wordCount, caret: caret, encoding: encodingName)
+    }
+
+    private var encodingName: String {
+        switch fileEncoding {
+        case .utf8: "UTF-8"
+        case .utf16LittleEndian: "UTF-16 LE"
+        case .utf16BigEndian: "UTF-16 BE"
+        default: "GB18030" // the only other encoding MarkdownRenderer.decode accepts
+        }
     }
 
     @objc func zoomIn(_ sender: Any?) { setZoom(Prefs.zoom * 1.1) }
@@ -409,6 +456,8 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSSp
         case #selector(toggleSource(_:)):
             item.state = mode == .source ? .on : .off
             return isMarkdown
+        case #selector(toggleBold(_:)), #selector(toggleItalic(_:)), #selector(insertLink(_:)):
+            return isMarkdown && mode != .preview && window?.firstResponder === editor?.textView
         case #selector(togglePreviewPane(_:)):
             item.state = mode == .edit && !previewPane.isHidden ? .on : .off
             return mode == .edit
@@ -592,7 +641,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSSp
     func windowWillClose(_ notification: Notification) {
         watcher?.stop()
         watcher = nil
-        pendingPreviewRender?.cancel()
+        pendingEditRefresh?.cancel()
         setSuddenTerminationAllowed(true)
         onClose?(self)
     }

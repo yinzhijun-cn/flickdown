@@ -34,7 +34,7 @@ struct TextDocumentTests {
             #expect(document.mode == .source)
             #expect(editor.text == text)
             #expect(editor.headings().isEmpty)
-            #expect(document.window?.contentView === editor.scrollView)
+            #expect(document.content.body === editor.scrollView)
 
             document.setMode(.preview)
             document.setMode(.edit)
@@ -189,11 +189,11 @@ struct TextDocumentTests {
         document.mode = .edit
         editor.scrollView.removeFromSuperview()
         document.sourceOutline?.view.removeFromSuperview()
-        let split = NSSplitView(frame: try #require(window.contentView).bounds)
+        let split = NSSplitView(frame: document.content.bodyBounds)
         split.isVertical = true
         split.dividerStyle = .thin
         split.delegate = document
-        window.contentView = split
+        document.content.body = split
         let preview = PreviewPane(webView: WKWebView(frame: NSRect(x: 0, y: 0, width: 1000, height: 800)))
         document.layoutEditPanes(in: split, editor: editor, preview: preview)
         editor.scroll(toLine: 1)

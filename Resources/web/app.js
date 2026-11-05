@@ -12,6 +12,7 @@
   const baseEl = document.getElementById('flick-base');
   const widthButton = document.getElementById('flick-width');
   const tocButton = document.getElementById('flick-toc-toggle');
+  const copyButton = document.getElementById('flick-copy');
   document.getElementById('flick-toc-title').textContent = ZH ? '目录' : 'CONTENTS';
   widthButton.title = ZH ? '切换页宽' : 'Change Page Width';
 
@@ -341,6 +342,7 @@
     firstFrameDone = false;
     spyList = null;
     blockLines = null;
+    hideCopy();
 
     showPageWidth(width);
     baseEl.setAttribute('href', base); // relative images and links resolve against the document's folder
@@ -421,7 +423,7 @@
 
   function setTOC(show) {
     document.body.classList.toggle('flick-toc-open', !!show);
-    tocButton.textContent = show ? '«' : (ZH ? '☰ 目录' : '☰ Contents');
+    tocButton.querySelector('span').textContent = show ? '' : (ZH ? '目录' : 'Contents');
     tocButton.title = show ? (ZH ? '收起目录' : 'Hide Contents') : (ZH ? '展开目录' : 'Show Contents');
   }
 
@@ -442,7 +444,7 @@
 
   function showPageWidth(width) {
     document.body.dataset.width = width;
-    widthButton.textContent = '↔ ' + PAGE_WIDTH_TITLES[width];
+    widthButton.querySelector('span').textContent = PAGE_WIDTH_TITLES[width];
   }
 
   // The floating button steps through the widths; the app remembers the choice.
@@ -737,6 +739,40 @@
     if (!href || !href.startsWith('#')) return;
     e.preventDefault();
     try { jump(decodeURIComponent(href.slice(1))); } catch { jump(href.slice(1)); }
+  });
+
+  // ---------------------------------------------------------------------------
+  // Copy button: one button, moved to the top right of whichever code block the pointer is over.
+
+  const COPY_LABEL = ZH ? '复制' : 'Copy';
+  const COPIED_LABEL = ZH ? '已复制' : 'Copied';
+  const copyLabel = copyButton.querySelector('span');
+  let copyTarget = null;
+
+  function hideCopy() {
+    copyTarget = null;
+    copyButton.classList.remove('flick-show');
+  }
+
+  document.addEventListener('mouseover', (e) => {
+    if (copyButton.contains(e.target)) return;
+    const pre = e.target.closest?.('#flick-content pre');
+    if (pre === copyTarget) return;
+    if (!pre) return hideCopy();
+    copyTarget = pre;
+    const r = pre.getBoundingClientRect();
+    copyButton.style.top = `${r.top + window.scrollY + 6}px`;
+    copyButton.style.left = `${r.right + window.scrollX - 6}px`;
+    copyLabel.textContent = COPY_LABEL;
+    copyButton.classList.add('flick-show');
+  });
+  document.documentElement.addEventListener('mouseleave', hideCopy);
+
+  // The app writes the pasteboard: the page has no clipboard access of its own.
+  copyButton.addEventListener('click', () => {
+    if (!copyTarget) return;
+    post({ type: 'copy', text: copyTarget.textContent.replace(/\n$/, '') });
+    copyLabel.textContent = COPIED_LABEL;
   });
 
   window.addEventListener('scroll', onScroll, { passive: true });

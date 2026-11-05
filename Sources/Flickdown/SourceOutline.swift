@@ -19,13 +19,6 @@ final class SourceOutline: NSObject, NSTableViewDataSource, NSTableViewDelegate 
     private var minLevel = 1
     private var active = -1
 
-    /// Same colour as the preview's outline background.
-    static let background = NSColor(name: nil) { appearance in
-        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-            ? NSColor(srgbRed: 0x19 / 255.0, green: 0x1A / 255.0, blue: 0x1D / 255.0, alpha: 1)
-            : NSColor(srgbRed: 0xF6 / 255.0, green: 0xF8 / 255.0, blue: 0xFA / 255.0, alpha: 1)
-    }
-
     override init() {
         super.init()
         table.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("heading")))
@@ -34,7 +27,7 @@ final class SourceOutline: NSObject, NSTableViewDataSource, NSTableViewDelegate 
         table.rowSizeStyle = .custom
         table.rowHeight = 24
         table.intercellSpacing = NSSize(width: 0, height: 2)
-        table.backgroundColor = Self.background
+        table.backgroundColor = Theme.sidebar
         table.selectionHighlightStyle = .none
         table.focusRingType = .none
         table.dataSource = self
@@ -47,7 +40,7 @@ final class SourceOutline: NSObject, NSTableViewDataSource, NSTableViewDelegate 
         scrollView.hasVerticalScroller = true
         scrollView.autohidesScrollers = true
         scrollView.drawsBackground = true
-        scrollView.backgroundColor = Self.background
+        scrollView.backgroundColor = Theme.sidebar
         scrollView.automaticallyAdjustsContentInsets = false
         scrollView.contentInsets = NSEdgeInsets(top: 0, left: 0, bottom: 12, right: 0)
 
@@ -59,8 +52,12 @@ final class SourceOutline: NSObject, NSTableViewDataSource, NSTableViewDelegate 
         view.addArrangedSubview(scrollView)
         title.font = .systemFont(ofSize: 11, weight: .semibold)
         title.textColor = .secondaryLabelColor
-        toggleButton.bezelStyle = .push
+        // Same look as the preview's outline switch: a faint sidebar icon that shows its border on hover.
+        toggleButton.bezelStyle = .accessoryBarAction
+        toggleButton.showsBorderOnlyWhileMouseInside = true
         toggleButton.controlSize = .small
+        toggleButton.image = NSImage(systemSymbolName: "sidebar.left", accessibilityDescription: nil)
+        toggleButton.contentTintColor = Theme.muted
         for control in [title, toggleButton] {
             control.translatesAutoresizingMaskIntoConstraints = false
             header.addSubview(control)
@@ -88,7 +85,8 @@ final class SourceOutline: NSObject, NSTableViewDataSource, NSTableViewDelegate 
         NSLayoutConstraint.deactivate([buttonLeading, buttonTrailing])
         (expanded ? buttonTrailing : buttonLeading).isActive = true
         title.isHidden = !expanded
-        toggleButton.title = expanded ? "«" : L("☰ 目录", "☰ Contents")
+        toggleButton.title = expanded ? "" : L("目录", "Contents")
+        toggleButton.imagePosition = expanded ? .imageOnly : .imageLeading
         let actionLabel = expanded ? L("收起目录", "Hide Contents") : L("展开目录", "Show Contents")
         toggleButton.toolTip = actionLabel
         toggleButton.setAccessibilityLabel(actionLabel)

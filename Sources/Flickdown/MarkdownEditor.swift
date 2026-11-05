@@ -15,11 +15,20 @@ final class MarkdownEditor: NSObject, NSTextViewDelegate {
     let textView: NSTextView
     var onChange: (() -> Void)?
     var onScroll: (() -> Void)?
+    var onSelectionChange: (() -> Void)?
+    /// Widest text column (at 100% zoom); nil fills the view. Wide windows centre the column.
+    var maxTextWidth: CGFloat? {
+        didSet { layoutTextColumn() }
+    }
 
     private let storage = NSTextStorage()
     private let syntax: Syntax
     private let layoutManager = NSLayoutManager()
     private var baseAttributes: [NSAttributedString.Key: Any] = [:]
+    private var zoom = 1.0
+    private var fonts = (regular: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular),
+                         bold: NSFont.monospacedSystemFont(ofSize: 13, weight: .semibold),
+                         italic: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular))
     private var savedText = ""
     private var editedSinceSave = false
     private var cachedIndex: TextIndex?
@@ -55,16 +64,19 @@ final class MarkdownEditor: NSObject, NSTextViewDelegate {
         textView.isContinuousSpellCheckingEnabled = false
         textView.smartInsertDeleteEnabled = false
         textView.textContainerInset = NSSize(width: 18, height: 20)
-        textView.backgroundColor = .textBackgroundColor
+        textView.backgroundColor = Theme.background
         textView.delegate = self
 
         scrollView.documentView = textView
         scrollView.hasVerticalScroller = true
         scrollView.autohidesScrollers = true
-        scrollView.backgroundColor = .textBackgroundColor
+        scrollView.backgroundColor = Theme.background
         scrollView.contentView.postsBoundsChangedNotifications = true
         NotificationCenter.default.addObserver(self, selector: #selector(boundsChanged(_:)),
                                                name: NSView.boundsDidChangeNotification, object: scrollView.contentView)
+        scrollView.postsFrameChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(frameChanged(_:)),
+                                               name: NSView.frameDidChangeNotification, object: scrollView)
 
         ruler = LineNumberRuler(editor: self)
         scrollView.verticalRulerView = ruler
@@ -111,16 +123,46 @@ final class MarkdownEditor: NSObject, NSTextViewDelegate {
     }
 
     func setZoom(_ zoom: Double) {
+        self.zoom = zoom
         let font = NSFont.monospacedSystemFont(ofSize: 13 * zoom, weight: .regular)
+        let italic = font.fontDescriptor.withSymbolicTraits(.italic)
+        fonts = (font, .monospacedSystemFont(ofSize: 13 * zoom, weight: .semibold), NSFont(descriptor: italic, size: font.pointSize) ?? font)
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineHeightMultiple = 1.3
         paragraph.tabStops = []
         paragraph.defaultTabInterval = 4 * (" " as NSString).size(withAttributes: [.font: font]).width
-        baseAttributes = [.font: font, .paragraphStyle: paragraph, .foregroundColor: NSColor.textColor]
+        baseAttributes = [.font: font, .paragraphStyle: paragraph, .foregroundColor: Theme.text]
         textView.typingAttributes = baseAttributes
         storage.addAttributes(baseAttributes, range: NSRange(location: 0, length: storage.length))
         ruler.update(zoom: zoom, lineCount: lineCount)
+        layoutTextColumn()
         queueHighlight()
+    }
+
+    /// Caps the text column at `maxTextWidth` and centres it. The left margin goes into the line-number ruler,
+    /// so the numbers stay beside the text; the right margin is left outside the text container.
+    private func layoutTextColumn() {
+        guard let container = textView.textContainer else { return }
+        let inset = textView.textContainerInset.width
+        let column = maxTextWidth.map { $0 * zoom + 2 * inset }
+        let margin = column.map { max(0, (scrollView.bounds.width - ruler.numbersThickness - $0) / 2) } ?? 0
+        ruler.margin = margin
+        container.widthTracksTextView = margin == 0
+        if let column, margin > 0 {
+            container.size = NSSize(width: column - 2 * inset, height: CGFloat.greatestFiniteMagnitude)
+        } else {
+            container.size = NSSize(width: max(0, textView.bounds.width - 2 * inset), height: CGFloat.greatestFiniteMagnitude)
+        }
+        queueHighlight()
+    }
+
+    /// 1-based line and column of the caret, as the status bar shows them.
+    func caretPosition() -> (line: Int, column: Int) {
+        let caret = textView.selectedRange().location
+        let line = lineNumber(at: caret)
+        let start = index().lineStarts[line]
+        let column = (textView.string as NSString).substring(with: NSRange(location: start, length: caret - start)).count
+        return (line + 1, column + 1)
     }
 
     // MARK: Lines and scroll position
@@ -363,18 +405,20 @@ final class MarkdownEditor: NSObject, NSTextViewDelegate {
     // MARK: Highlighting
 
     private enum Palette {
-        static let heading = NSColor.systemBlue
-        static let mark = NSColor.systemOrange
-        static let code = NSColor.systemPurple
-        static let link = NSColor.linkColor
-        static let tag = NSColor.systemGreen
-        static let muted = NSColor.secondaryLabelColor
+        static let mark = Theme.accent
+        static let code = Theme.code
+        static let link = Theme.accent
+        static let tag = Theme.htmlTag
+        static let muted = Theme.muted
+        static let punctuation = Theme.syntaxPunctuation
     }
 
     private static func regex(_ pattern: String) -> NSRegularExpression {
         try! NSRegularExpression(pattern: pattern)
     }
     private static let headingRx = regex("^ {0,3}#{1,6}(?:\\s|$)")
+    private static let boldRx = regex("(\\*\\*|__)(?=\\S)(.+?)(?<=\\S)\\1")
+    private static let italicRx = regex("(?<!\\*)\\*(?=[^\\s*])(.+?)(?<=[^\\s*])\\*(?!\\*)|(?<![_\\p{L}\\p{N}])_(?=[^\\s_])(.+?)(?<=[^\\s_])_(?![_\\p{L}\\p{N}])")
     private static let ruleRx = regex("^ {0,3}(?:([-*_])(?:\\s*\\1){2,}|=+)\\s*$")
     private static let quoteRx = regex("^\\s*(?:>\\s?)+")
     private static let listRx = regex("^\\s*([-*+]|\\d{1,9}[.)])\\s+(\\[[ xX]\\](?=\\s))?")
@@ -405,6 +449,7 @@ final class MarkdownEditor: NSObject, NSTextViewDelegate {
         let end = lastLine + 1 < idx.lineStarts.count ? idx.lineStarts[lastLine + 1] : s.length
         let range = NSRange(location: idx.lineStarts[firstLine], length: end - idx.lineStarts[firstLine])
         layoutManager.removeTemporaryAttribute(.foregroundColor, forCharacterRange: range)
+        var styled: [(range: NSRange, font: NSFont)] = []
 
         // Use the same CR/LF boundaries as the index. Unicode separators can be string content.
         for line in firstLine...lastLine {
@@ -414,7 +459,7 @@ final class MarkdownEditor: NSObject, NSTextViewDelegate {
             while content.length > 0, Self.isNewline(s.character(at: NSMaxRange(content) - 1)) { content.length -= 1 }
             switch syntax {
             case .markdown:
-                colour(line: s.substring(with: content), at: content.location, kind: kind(ofLine: line))
+                colour(line: s.substring(with: content), at: content.location, kind: kind(ofLine: line), styled: &styled)
             case .sql:
                 var state = idx.sqlStates[line]
                 SQLHighlighter.scan(s, range: content, state: &state, emit: applyHighlight)
@@ -427,6 +472,22 @@ final class MarkdownEditor: NSObject, NSTextViewDelegate {
                 break
             }
         }
+        if syntax == .markdown { applyFonts(styled, in: range) }
+    }
+
+    /// Bold headings and emphasis. Fonts live in the text storage (unlike colours), so it is only touched when
+    /// the visible lines' styling actually changed; bold and italic SF Mono keep the regular advance width.
+    private func applyFonts(_ styled: [(range: NSRange, font: NSFont)], in range: NSRange) {
+        let styled = styled.sorted { $0.range.location < $1.range.location }
+        var current: [(range: NSRange, font: NSFont)] = []
+        storage.enumerateAttribute(.font, in: range) { value, run, _ in
+            if let font = value as? NSFont, font != fonts.regular { current.append((run, font)) }
+        }
+        guard !current.elementsEqual(styled, by: { $0.range == $1.range && $0.font == $1.font }) else { return }
+        storage.beginEditing()
+        storage.addAttribute(.font, value: fonts.regular, range: range)
+        for run in styled { storage.addAttribute(.font, value: run.font, range: run.range) }
+        storage.endEditing()
     }
 
     private func applyHighlight(_ range: NSRange, _ kind: SyntaxTokenKind) {
@@ -442,19 +503,26 @@ final class MarkdownEditor: NSObject, NSTextViewDelegate {
         layoutManager.addTemporaryAttribute(.foregroundColor, value: color, forCharacterRange: range)
     }
 
-    private func colour(line: String, at base: Int, kind: LineKind) {
+    private func colour(line: String, at base: Int, kind: LineKind, styled: inout [(range: NSRange, font: NSFont)]) {
         let full = NSRange(location: 0, length: (line as NSString).length)
         func paint(_ r: NSRange, _ color: NSColor) {
             guard r.location != NSNotFound, r.length > 0 else { return }
             layoutManager.addTemporaryAttribute(.foregroundColor, value: color,
                                                 forCharacterRange: NSRange(location: base + r.location, length: r.length))
         }
+        func style(_ r: NSRange, _ font: NSFont) {
+            guard r.location != NSNotFound, r.length > 0 else { return }
+            styled.append((NSRange(location: base + r.location, length: r.length), font))
+        }
         switch kind {
-        case .fence: return paint(full, Palette.muted)
+        case .fence: return paint(full, Palette.punctuation)
         case .code: return paint(full, Palette.code)
         case .text: break
         }
-        if Self.headingRx.firstMatch(in: line, range: full) != nil { return paint(full, Palette.heading) }
+        if let m = Self.headingRx.firstMatch(in: line, range: full) {
+            paint(m.range, Palette.mark)
+            return style(full, fonts.bold)
+        }
         if Self.ruleRx.firstMatch(in: line, range: full) != nil { return paint(full, Palette.mark) }
 
         if let m = Self.quoteRx.firstMatch(in: line, range: full) {
@@ -472,12 +540,24 @@ final class MarkdownEditor: NSObject, NSTextViewDelegate {
                 paint(m.range(at: 1), Palette.code)
             } else if m.range(at: 2).location != NSNotFound {
                 paint(m.range(at: 2), Palette.link)
-                paint(m.range(at: 3), Palette.muted)
+                paint(m.range(at: 3), Palette.punctuation)
             } else if m.range(at: 4).location != NSNotFound {
                 paint(m.range(at: 4), Palette.tag)
             } else {
-                paint(m.range(at: 5), Palette.muted)
+                paint(m.range(at: 5), Palette.link)
             }
+        }
+        // Emphasis: the markers fade, the text takes the bold or italic face.
+        for m in Self.boldRx.matches(in: line, range: full) {
+            let marker = m.range(at: 1).length
+            paint(NSRange(location: m.range.location, length: marker), Palette.punctuation)
+            paint(NSRange(location: NSMaxRange(m.range) - marker, length: marker), Palette.punctuation)
+            style(m.range(at: 2), fonts.bold)
+        }
+        for m in Self.italicRx.matches(in: line, range: full) {
+            paint(NSRange(location: m.range.location, length: 1), Palette.punctuation)
+            paint(NSRange(location: NSMaxRange(m.range) - 1, length: 1), Palette.punctuation)
+            style(m.range(at: 1).location != NSNotFound ? m.range(at: 1) : m.range(at: 2), fonts.italic)
         }
     }
 
@@ -488,6 +568,55 @@ final class MarkdownEditor: NSObject, NSTextViewDelegate {
         textChanged()
         // Wait for the input method to commit before re-rendering (e.g. while composing pinyin).
         if !textView.hasMarkedText() { onChange?() }
+    }
+
+    func textViewDidChangeSelection(_ notification: Notification) {
+        onSelectionChange?()
+    }
+
+    /// Return, Tab and Shift-Tab on list items and quotes (outside fenced code).
+    func textView(_ view: NSTextView, doCommandBy selector: Selector) -> Bool {
+        guard syntax == .markdown, !view.hasMarkedText() else { return false }
+        let text = view.string as NSString
+        let selection = view.selectedRange()
+        guard kind(ofLine: lineNumber(at: selection.location)) == .text else { return false }
+        let edit: MarkdownEditing.Edit?
+        switch selector {
+        case #selector(NSResponder.insertNewline(_:)):
+            edit = MarkdownEditing.newline(in: text, selection: selection)
+        case #selector(NSResponder.insertTab(_:)):
+            edit = MarkdownEditing.indent(in: text, selection: selection, outdent: false)
+        case #selector(NSResponder.insertBacktab(_:)):
+            edit = MarkdownEditing.indent(in: text, selection: selection, outdent: true)
+        default:
+            edit = nil
+        }
+        guard let edit else { return false }
+        apply(edit)
+        return true
+    }
+
+    // MARK: Formatting
+
+    func toggleEmphasis(_ marker: String) {
+        apply(MarkdownEditing.toggleEmphasis(marker, in: textView.string as NSString, selection: textView.selectedRange()))
+    }
+
+    func insertLink() {
+        apply(MarkdownEditing.link(in: textView.string as NSString, selection: textView.selectedRange()))
+    }
+
+    /// One undoable change, as if typed.
+    private func apply(_ edit: MarkdownEditing.Edit) {
+        guard textView.shouldChangeText(in: edit.range, replacementString: edit.text) else { return }
+        storage.replaceCharacters(in: edit.range, with: NSAttributedString(string: edit.text, attributes: baseAttributes))
+        textView.didChangeText()
+        textView.setSelectedRange(edit.selection)
+        textView.scrollRangeToVisible(edit.selection)
+    }
+
+    @objc private func frameChanged(_ notification: Notification) {
+        if maxTextWidth != nil { layoutTextColumn() }
     }
 
     @objc private func boundsChanged(_ notification: Notification) {
@@ -514,6 +643,12 @@ final class LineNumberRuler: NSRulerView {
     private weak var editor: MarkdownEditor?
     private var font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
     private var digits = 0
+    /// Width the line numbers need.
+    private(set) var numbersThickness: CGFloat = 0
+    /// Extra space to the left of the numbers, which centres a capped text column.
+    var margin: CGFloat = 0 {
+        didSet { if margin != oldValue { ruleThickness = numbersThickness + margin } }
+    }
 
     init(editor: MarkdownEditor) {
         self.editor = editor
@@ -536,7 +671,8 @@ final class LineNumberRuler: NSRulerView {
         if needed != digits {
             digits = needed
             let digitWidth = ("8" as NSString).size(withAttributes: [.font: font]).width
-            ruleThickness = ceil(CGFloat(digits) * digitWidth) + 16
+            numbersThickness = ceil(CGFloat(digits) * digitWidth) + 16
+            ruleThickness = numbersThickness + margin
         }
         needsDisplay = true
     }
@@ -544,7 +680,7 @@ final class LineNumberRuler: NSRulerView {
     override func drawHashMarksAndLabels(in rect: NSRect) {
         guard let editor, let layout = editor.textView.layoutManager, let container = editor.textView.textContainer else { return }
         let textView = editor.textView
-        NSColor.textBackgroundColor.setFill()
+        Theme.background.setFill()
         bounds.intersection(rect).fill()
 
         let origin = textView.textContainerOrigin
