@@ -13,7 +13,7 @@ jobs:
   release:
     runs-on: macos-26
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # tag 去掉 v 作为版本号写入 Info.plist（只改本次构建的工作区，不提交）；
       # 必须在 build.sh 签名之前写，签名后再改 plist 会破坏签名。
@@ -31,13 +31,13 @@ jobs:
         run: ditto -c -k --keepParent build/Flickdown.app "build/Flickdown-$VERSION.zip"
 
       - name: 上传 artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: Flickdown-${{ env.VERSION }}
           path: build/Flickdown-${{ env.VERSION }}.zip
 
       - name: 创建 GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: build/Flickdown-${{ env.VERSION }}.zip
           generate_release_notes: true
