@@ -28,6 +28,8 @@ enum MainMenu {
         app.addItem(item(L("退出 \(name)", "Quit \(name)"), #selector(NSApplication.terminate(_:)), "q"))
 
         let file = submenu(of: bar, L("文件", "File"))
+        file.addItem(item(L("开始页", "Start Page"), #selector(AppDelegate.showStartPage(_:))))
+        file.addItem(.separator())
         file.addItem(item(L("新建", "New"), #selector(AppDelegate.newDocument(_:)), "n"))
         file.addItem(item(L("打开…", "Open…"), #selector(AppDelegate.showOpenPanel(_:)), "o"))
         file.addItem(item(L("在新标签页中打开…", "Open in New Tab…"), #selector(AppDelegate.showOpenPanel(_:)), "t"))

@@ -1,9 +1,11 @@
 import AppKit
 import Sparkle
+import SwiftUI
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private var documents: [DocumentWindowController] = []
+    private(set) var startWindow: NSWindow?
     private var untitledCount = 0
     private var updaterController: SPUStandardUpdaterController?
 
@@ -25,7 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         Bench.mark("didFinishLaunching")
         // Needed when started from a terminal; Finder and `open` already activate us.
         NSApp.activate()
-        if documents.isEmpty { showOpenPanel(nil) }
+        if documents.isEmpty { showStartPage(nil) }
         updaterController?.startUpdater()
     }
 
@@ -35,8 +37,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if !flag { showOpenPanel(nil) }
-        return false
+        if !flag && documents.isEmpty {
+            showStartPage(nil)
+            return false
+        }
+        return true
     }
 
     // Stay running after the last window closes so the next open skips process launch entirely.
@@ -72,6 +77,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             let url = url.standardizedFileURL.resolvingSymlinksInPath()
             if let existing = documents.first(where: { $0.fileURL == url }) {
                 existing.showWindow(nil)
+                startWindow?.orderOut(nil)
                 continue
             }
             var isDir: ObjCBool = false
@@ -105,6 +111,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private func add(_ doc: DocumentWindowController) {
         doc.onClose = { [weak self] closed in self?.documents.removeAll { $0 === closed } }
         documents.append(doc)
+        startWindow?.orderOut(nil)
         if let window = doc.window { DebugHooks.configure(window) }
     }
 
@@ -135,6 +142,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         return true
     }
 
+    @objc func showStartPage(_ sender: Any?) {
+        if startWindow == nil {
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 620, height: 380),
+                                  styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: true)
+            window.title = L("开始页", "Start Page")
+            window.titleVisibility = .hidden
+            window.titlebarAppearsTransparent = true
+            window.tabbingMode = .disallowed
+            window.isRestorable = false
+            window.isReleasedWhenClosed = false
+            window.contentView = NSHostingView(rootView: StartPage(
+                recentURLs: [],
+                newDocument: { [weak self] in self?.newDocument(nil) },
+                openDocument: { [weak self] in self?.showOpenPanel(nil) },
+                openRecent: { [weak self] url in self?.openRecentFile(url) }
+            ))
+            window.center()
+            startWindow = window
+        }
+        startWindow?.makeKeyAndOrderFront(sender)
+        refreshStartPageRecents()
+    }
+
+    fileprivate func refreshStartPageRecents() {
+        guard let startWindow, startWindow.isVisible,
+              let view = startWindow.contentView as? NSHostingView<StartPage> else { return }
+        view.rootView.recentURLs = NSDocumentController.shared.recentDocumentURLs
+    }
+
+    private func openRecentFile(_ url: URL) {
+        do {
+            _ = try url.checkResourceIsReachable()
+            open([url])
+        } catch {
+            if let startWindow { NSAlert(error: error).beginSheetModal(for: startWindow) }
+        }
+    }
+
     @objc func showOpenPanel(_ sender: Any?) {
         showOpenPanel(inNewWindow: false)
     }
@@ -159,6 +204,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
 /// Routes "Open Recent" (File menu and Dock) to AppDelegate; the app doesn't use NSDocument.
 final class RecentDocumentsController: NSDocumentController {
+    override func noteNewRecentDocumentURL(_ url: URL) {
+        super.noteNewRecentDocumentURL(url)
+        (NSApp.delegate as? AppDelegate)?.refreshStartPageRecents()
+    }
+
+    override func clearRecentDocuments(_ sender: Any?) {
+        super.clearRecentDocuments(sender)
+        (NSApp.delegate as? AppDelegate)?.refreshStartPageRecents()
+    }
+
     override func openDocument(withContentsOf url: URL, display displayDocument: Bool,
                                completionHandler: @escaping (NSDocument?, Bool, (any Error)?) -> Void) {
         (NSApp.delegate as? AppDelegate)?.open([url])
