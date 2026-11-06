@@ -404,6 +404,7 @@ final class MarkdownEditor: NSObject, NSTextViewDelegate {
 
     // MARK: Highlighting
 
+    @MainActor
     private enum Palette {
         static let mark = Theme.accent
         static let code = Theme.code
