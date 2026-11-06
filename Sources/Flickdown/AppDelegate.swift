@@ -1,16 +1,21 @@
 import AppKit
+import Sparkle
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private var documents: [DocumentWindowController] = []
     private var untitledCount = 0
+    private var updaterController: SPUStandardUpdaterController?
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         Bench.mark("willFinishLaunching")
         DebugHooks.configureApp()
         // Open requests choose their tab group explicitly, independent of the system preference.
         NSWindow.allowsAutomaticWindowTabbing = false
-        NSApp.mainMenu = MainMenu.build()
+        if Bundle.main.object(forInfoDictionaryKey: "SUPublicEDKey") != nil {
+            updaterController = SPUStandardUpdaterController(startingUpdater: false, updaterDelegate: nil, userDriverDelegate: nil)
+        }
+        NSApp.mainMenu = MainMenu.build(updaterController: updaterController)
 
         // Paths given on the command line (e.g. running the binary directly).
         open(CommandLine.arguments.dropFirst().filter { !$0.hasPrefix("-") }.map { URL(fileURLWithPath: $0) })
@@ -21,6 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         // Needed when started from a terminal; Finder and `open` already activate us.
         NSApp.activate()
         if documents.isEmpty { showOpenPanel(nil) }
+        updaterController?.startUpdater()
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
@@ -113,7 +119,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         group.selectedWindow = selectedWindow
     }
 
+    @objc func toggleAutomaticUpdateChecks(_ sender: Any?) {
+        updaterController?.updater.automaticallyChecksForUpdates.toggle()
+    }
+
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if item.action == #selector(toggleAutomaticUpdateChecks(_:)), let updater = updaterController?.updater {
+            item.state = updater.automaticallyChecksForUpdates ? .on : .off
+            return true
+        }
         if item.action == #selector(mergeAllDocumentWindows(_:)) {
             guard let group = documents.first?.window?.tabGroup else { return false }
             return documents.contains { $0.window?.tabGroup !== group }

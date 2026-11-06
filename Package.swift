@@ -4,6 +4,9 @@ import PackageDescription
 let package = Package(
     name: "Flickdown",
     platforms: [.macOS(.v14)],
+    dependencies: [
+        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.1"),
+    ],
     targets: [
         // md4c: the Markdown parser + HTML renderer (C, MIT). Vendored from github.com/mity/md4c v0.6.0.
         .target(
@@ -15,7 +18,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "Flickdown",
-            dependencies: ["CMd4c"],
+            dependencies: ["CMd4c", .product(name: "Sparkle", package: "Sparkle")],
             path: "Sources/Flickdown",
             linkerSettings: [.linkedFramework("AppKit"), .linkedFramework("WebKit")]
         ),

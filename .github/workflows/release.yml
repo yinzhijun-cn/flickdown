@@ -1,4 +1,4 @@
-# 推送 v* tag 时构建 Flickdown.app，打成 zip 上传 artifact 并创建 GitHub Release。
+# 推送 v* tag 时构建应用，并将签名更新清单随 ZIP 一起发布。
 name: Release
 
 on:
@@ -25,21 +25,34 @@ jobs:
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $GITHUB_RUN_NUMBER" Resources/Info.plist
 
       - name: 构建
-        run: bash scripts/build.sh
+        env:
+          SPARKLE_PUBLIC_ED_KEY: ${{ vars.SPARKLE_PUBLIC_ED_KEY }}
+        run: |
+          : "${SPARKLE_PUBLIC_ED_KEY:?请配置仓库变量 SPARKLE_PUBLIC_ED_KEY}"
+          bash scripts/build.sh
 
-      - name: 打包 zip
-        run: ditto -c -k --keepParent build/Flickdown.app "build/Flickdown-$VERSION.zip"
+      - name: 打包并验证更新签名
+        env:
+          SPARKLE_PRIVATE_ED_KEY: ${{ secrets.SPARKLE_PRIVATE_ED_KEY }}
+        run: |
+          bash scripts/package-update.sh build/release \
+            "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/"
 
       - name: 上传 artifact
         uses: actions/upload-artifact@v7
         with:
           name: Flickdown-${{ env.VERSION }}
-          path: build/Flickdown-${{ env.VERSION }}.zip
+          path: |
+            build/release/Flickdown-${{ env.VERSION }}.zip
+            build/release/appcast.xml
 
       - name: 创建 GitHub Release
         uses: softprops/action-gh-release@v3
         with:
-          files: build/Flickdown-${{ env.VERSION }}.zip
+          files: |
+            build/release/Flickdown-${{ env.VERSION }}.zip
+            build/release/appcast.xml
+          fail_on_unmatched_files: true
           generate_release_notes: true
           body: |
             应用仅做了 ad-hoc 签名、未公证。下载解压后首次打开会被 Gatekeeper 拦截，请右键「打开」，或执行：

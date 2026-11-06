@@ -1,14 +1,21 @@
 import AppKit
+import Sparkle
 
 /// The menu bar, built in code: no nib to load at launch.
 @MainActor
 enum MainMenu {
-    static func build() -> NSMenu {
+    static func build(updaterController: SPUStandardUpdaterController?) -> NSMenu {
         let name = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "Flickdown"
         let bar = NSMenu()
 
         let app = submenu(of: bar, name)
         app.addItem(item(L("关于 \(name)", "About \(name)"), #selector(NSApplication.orderFrontStandardAboutPanel(_:))))
+        if let updaterController {
+            let check = item(L("检查更新…", "Check for Updates…"), #selector(SPUStandardUpdaterController.checkForUpdates(_:)))
+            check.target = updaterController
+            app.addItem(check)
+            app.addItem(item(L("自动检查更新", "Automatically Check for Updates"), #selector(AppDelegate.toggleAutomaticUpdateChecks(_:))))
+        }
         app.addItem(.separator())
         let services = NSMenu()
         app.addItem(parent(L("服务", "Services"), services))

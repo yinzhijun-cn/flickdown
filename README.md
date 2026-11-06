@@ -46,6 +46,12 @@
 
 产物在 `build/Flickdown.app`，可拖到「应用程序」文件夹。在 Finder 里对任意 `.md` 文件「显示简介 → 打开方式 → 全部更改」即可设为默认查看器。
 
+### 自动更新
+
+Flickdown 默认在运行期间每天检查一次稳定版。有新版本时，按提示即可下载、安装并重新启动。在 Flickdown 菜单中选择「检查更新…」可立即检查，取消勾选「自动检查更新」可关闭定期检查，再次勾选即可恢复。使用旧版的用户需要先手动安装一次带自动更新功能的版本。[下载最新稳定版](https://github.com/yinzhijun-cn/flickdown/releases/latest)
+
+### 打开与编辑
+
 ⌘O 可选择任意扩展名的文本文件，也可通过 Finder「打开方式」或命令行打开。Markdown 文件保留三种视图模式，其他文本始终使用原生编辑视图；预览、分栏和大纲快捷键仅适用于 Markdown。
 
 ⌘N 创建未保存的 Markdown 文档，直接进入编辑与实时预览分栏；⌘S 首次存储时选择文件位置，⇧⌘S 可另存为新文件。预览页宽可通过「显示 → 页宽」、⌥⌘1 / 2 / 3 或右上角悬浮按钮切换，宽窗口下源码编辑区也按同一页宽限宽居中。预览和源码视图都可以点目录右上角的侧栏图标收起目录，再点左上角的「目录」展开。编辑模式拖动分隔线调整的比例会被记住，双击分隔线恢复对半。
@@ -144,6 +150,7 @@ Resources/
   web/vendor/            highlight.js 11.12、KaTeX 0.19、Mermaid 11.17
 scripts/
   build.sh               构建 .app
+  package-update.sh      生成并验签 Release 的 ZIP 和更新清单
   bench.sh               端到端打开速度（冷 / 热）
   gen-sample.py          生成大体积测试文档
   make-icon.swift        用代码绘制应用图标并生成 AppIcon.icns：swift scripts/make-icon.swift
@@ -163,6 +170,25 @@ swift run -c release md-bench /tmp/big.md   # md4c 吞吐量
 
 设置 `FLICK_BENCH=1` 运行时会在 stderr 打印启动各阶段耗时。其余开关（截图、强制深色、窗口尺寸等）见 `DebugHooks.swift`。
 
+## 发布带自动更新的版本
+
+首次发布带自动更新的版本前，在仓库目录运行 `swift package resolve`，然后使用 Sparkle 工具生成 Flickdown 专用的长期密钥。以下命令将公钥写入 GitHub Actions 仓库变量 `SPARKLE_PUBLIC_ED_KEY`，将私钥写入仓库 Secret `SPARKLE_PRIVATE_ED_KEY`。私钥保存在本机钥匙串中，维护者应另行安全备份。后续版本继续使用同一对密钥，以便已安装的客户端验签。
+
+```bash
+(
+  set -euo pipefail
+  keytool=.build/artifacts/sparkle/Sparkle/bin/generate_keys
+  "$keytool" --account flickdown
+  gh variable set SPARKLE_PUBLIC_ED_KEY --body "$("$keytool" --account flickdown -p)"
+  key_dir=$(mktemp -d)
+  trap 'rm -f "$key_dir/private-key"; rmdir "$key_dir"' EXIT
+  "$keytool" --account flickdown -x "$key_dir/private-key"
+  gh secret set SPARKLE_PRIVATE_ED_KEY < "$key_dir/private-key"
+)
+```
+
+推送新的 `v*` 标签后，工作流会在签名前将版本和公钥写入应用，为 ZIP 和更新清单 `appcast.xml` 签名，验证两份签名后一起发布。客户端通过最新正式 Release 获取更新清单，带 `-` 的预发布标签不会成为稳定版更新。源码构建默认不启用更新。
+
 ## 第三方组件
 
-md4c（MIT）、highlight.js（BSD-3-Clause）、KaTeX（MIT）、Mermaid（MIT），许可证文件随源码一起放在各自目录中。
+md4c（MIT）、highlight.js（BSD-3-Clause）、KaTeX（MIT）、Mermaid（MIT），许可证文件随源码一起放在各自目录中。自动更新使用 [Sparkle](https://github.com/sparkle-project/Sparkle)（MIT）。
